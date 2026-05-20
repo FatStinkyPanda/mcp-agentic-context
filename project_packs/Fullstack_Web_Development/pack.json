@@ -1,0 +1,5 @@
+{
+  "name": "Fullstack_Web_Development",
+  "required_python": "3.11",
+  "description": "Modern fullstack frontend, SPA, FastAPI/Uvicorn, and CSS web architectures"
+}

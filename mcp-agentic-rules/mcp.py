@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""
+MCP Tools Runner
+================
+Single entry point for all MCP AI enhancement tools.
+
+Works correctly regardless of:
+- How it's invoked (relative path, absolute path, symlink)
+- Current working directory
+- Installation location in project
+"""
+
+from pathlib import Path
+import json
+import os
+import sys
+
+import importlib
+
+# =============================================================================
+# CRITICAL: Resolve the ACTUAL location of this script
+# =============================================================================
+
+def get_package_root():
+    """
+    Get the absolute path to the core package directory.
+    Handles symlinks, relative paths, and various invocation methods.
+    """
+    # Method 1: Use __file__ (works in most cases)
+    if '__file__' in dir():
+        script_path = Path(__file__).resolve()
+        return script_path.parent
+
+    # Method 2: Use sys.argv[0] (when __file__ isn't available)
+    if sys.argv:
+        script_path = Path(sys.argv[0]).resolve()
+        if script_path.name == 'mcp.py':
+            return script_path.parent
+
+    # Method 3: Search common locations
+    cwd = Path.cwd()
+
+    # Check if package rules folder is in current directory
+    for pkg_name in ('mcp-agentic-rules', 'mcp-agentic-rules'):
+        if (cwd / pkg_name / 'mcp.py').exists():
+            return cwd / pkg_name
+
+    # Check if we're inside the package folder
+    if (cwd / 'mcp.py').exists() and (cwd / 'scripts').exists():
+        return cwd
+
+    # Check parent directories
+    for parent in cwd.parents:
+        for pkg_name in ('mcp-agentic-rules', 'mcp-agentic-rules'):
+            if (parent / pkg_name / 'mcp.py').exists():
+                return parent / pkg_name
+
+    return None
+
+
+# Get MCP root and add to path
+MCP_ROOT = get_package_root()
+
+if MCP_ROOT is None:
+    print("[FAIL] Cannot find mcp core package directory")
+    print("Make sure you're running from a project with the package rules installed")
+    sys.exit(1)
+
+
+def ensure_venv_execution():
+    """
+    Ensures that this script is executed inside the project's virtual environment (.venv).
+    If it is not, it locates the venv Python executable and re-executes itself.
+    """
+    # Don't auto-execute if they are trying to setup/doctor/gui outside venv or if it's already in venv
+    in_venv = (
+        hasattr(sys, 'real_prefix') or
+        (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+    )
+    if in_venv:
+        return
+
+    # Check if we should bypass auto-venv for setup commands
+    bypass_cmds = ('setup', 'doctor', 'verify', 'gui', 'pack')
+    if len(sys.argv) > 1 and sys.argv[1] in bypass_cmds:
+        return
+
+    project_root = MCP_ROOT.parent
+    venv_path = project_root / ".venv"
+
+    # Check if .venv python executable exists
+    if os.name == 'nt':
+        venv_python = venv_path / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_path / "bin" / "python"
+
+    if venv_python.exists():
+        import subprocess
+        cmd = [str(venv_python), str(MCP_ROOT / "mcp.py")] + sys.argv[1:]
+        sys.exit(subprocess.call(cmd))
+    else:
+        # Auto-bootstrap virtual environment
+        print("[MCP VENV] Virtual environment not found. Bootstrapping...")
+        try:
+            if str(MCP_ROOT) not in sys.path:
+                sys.path.insert(0, str(MCP_ROOT))
+            from scripts.venv_manager import VenvManager
+            vm = VenvManager(str(project_root))
+            if vm.ensure_venv():
+                import subprocess
+                cmd = [str(venv_python), str(MCP_ROOT / "mcp.py")] + sys.argv[1:]
+                sys.exit(subprocess.call(cmd))
+        except Exception as e:
+            print(f"[MCP VENV ERROR] Could not bootstrap virtual environment: {e}")
+
+
+# Run virtual environment enforcement
+ensure_venv_execution()
+
+# Add MCP root to path for imports
+if str(MCP_ROOT) not in sys.path:
+    sys.path.insert(0, str(MCP_ROOT))
+
+# Store for other modules to use
+os.environ['MCP_ROOT'] = str(MCP_ROOT)
+
+
+def show_help():
+    """Show help message."""
+    print("""
+MCP AI Enhancement Tools (48 Commands)
+=======================================
+
+Usage: python3 mcp-agentic-rules/mcp.py <command> [args...]
+
+Code Quality:
+    review [path] [--strict]    Code review automation
+    docs [path] [--write]       Generate missing docstrings
+    test [path]                 Generate pytest test stubs
+    deadcode [path]             Find unused code
+    fix [path] [--safe --apply] Auto-fix issues
+
+Analysis:
+    deps [path]                 Dependency analysis
+    profile [path]              Performance/complexity
+    security [path]             Security audit
+    errors [path]               Error handling
+    architecture [path]         Architecture validation
+
+Intelligence:
+    context "query" [path]      Smart context extraction
+    find "query" [path]         Natural language search
+    refactor [path]             Suggest refactorings
+
+Indexes:
+    index-all                   Full reindex (all 7)
+    git-history [file]          Git commit history
+    todos                       List TODOs/FIXMEs
+    impact [file]               What breaks?
+    test-coverage               Coverage data
+
+AI Memory:
+    remember "key" "value"      Store knowledge
+    recall "query"              Search memories
+    forget "key"                Remove memory
+    learn [--patterns]          Learn from feedback
+
+AI Prediction:
+    predict-bugs [file]         Predict bugs
+    risk-score                  Change risk score
+    test-gen [file] --impl      Generate full tests
+
+Multi-Repo:
+    search-all "query"          Search all projects
+    repos --add [path]          Manage repos
+
+CI/CD:
+    github-action               Generate workflow
+    pipeline [--gitlab]         Generate pipeline
+
+Automation:
+    watch [path]                Live index updates
+    autocontext                 Auto-load context
+    warm                        Pre-warm indexes
+
+Setup & Diagnostics:
+    setup --all                 Full setup
+    setup --hooks               Install git hooks
+    doctor                      Run system health diagnostics (self-repair)
+    gui                         Launch interactive local web GUI dashboard
+    record action "..."         Record an action to MCP log
+
+Project Packs:
+    pack list                   List available project packs
+    pack install <name>         Install a project pack
+""")
+
+
+# Map commands to modules
+COMMANDS = {
+    # Original tools
+    'test': 'auto_test',
+    'docs': 'auto_docs',
+    'deadcode': 'dead_code',
+    'deps': 'deps',
+    'summarize': 'summarize',
+    'changelog': 'changelog',
+    'review': 'review',
+    # Phase 2 tools
+    'context': 'context',
+    'refactor': 'refactor',
+    'apidocs': 'api_docs',
+    'coverage': 'doc_coverage',
+    'security': 'security',
+    'profile': 'profile',
+    "rem": "reminder",
+    "rec": "record",
+    "cybersec": "cybersec",
+    "nsync": "nsync",
+    "comms": "agent_comms",
+    "model": "model_manager",
+    'find': 'finder',
+    'errors': 'errors',
+    'migrate': 'migrate',
+    'architecture': 'architecture',
+    'arch': 'architecture',
+    'fix': 'fix',
+    'record': 'record',
+    'trigger-loop': 'trigger_loop',
+    # Semantic
+    'index': 'vector_store',
+    'search': 'vector_store',
+    'pattern': 'astgrep',
+    'parse': 'treesitter_utils',
+    'embed': 'embeddings',
+    # Automation
+    'watch': 'watcher',
+    'autocontext': 'autocontext',
+    'auto': 'autocontext',
+    # Advanced indexes
+    'index-all': 'index_all',
+    'git-history': 'git_index',
+    'blame': 'git_index',
+    'todos': 'todo_index',
+    'impact': 'impact',
+    'test-coverage': 'coverage_index',
+    'doc-index': 'doc_index',
+    'config-index': 'config_index',
+    # AI Enhancements
+    'remember': 'memory',
+    'recall': 'memory',
+    'forget': 'memory',
+    'learn': 'learning',
+    'predict-bugs': 'predict',
+    'risk-score': 'predict',
+    'search-all': 'multi_repo',
+    'repos': 'multi_repo',
+    'github-action': 'cicd',
+    'pipeline': 'cicd',
+    'test-gen': 'test_gen',
+    # Setup & Automation
+    'setup': 'setup',
+    'warm': 'warm',
+    'auto-learn': 'auto_learn',
+    # Project Packs
+    'pack': 'pack_manager',
+    # Health & GUI
+    'doctor': 'doctor',
+    'verify': 'doctor',
+    'gui': 'gui',
+}
+
+
+def main():
+    """Main entry point."""
+    workspace = None
+    argv = list(sys.argv)
+    
+    # Extract --workspace or -w from sys.argv
+    for opt in ('--workspace', '-w'):
+        if opt in argv:
+            idx = argv.index(opt)
+            if idx + 1 < len(argv):
+                workspace = argv[idx + 1]
+                del argv[idx:idx+2]
+            else:
+                del argv[idx]
+
+    if workspace:
+        os.environ['MCP_WORKSPACE'] = workspace
+
+    if len(argv) < 2 or argv[1] in ('help', '-h', '--help'):
+        show_help()
+        return 0
+
+    command = argv[1]
+    args = argv[2:]
+
+    if command not in COMMANDS:
+        print(f"[FAIL] Unknown command: {command}")
+        show_help()
+        return 1
+
+    module_name = COMMANDS[command]
+
+    try:
+        # Import the module
+        module = importlib.import_module(f'scripts.{module_name}')
+
+        # Update sys.argv for the module
+        sys.argv = [f'scripts/{module_name}.py'] + args
+
+        if hasattr(module, 'main'):
+            return module.main() or 0
+        else:
+            print(f"[FAIL] Module {module_name} has no main function")
+            return 1
+
+    except ImportError as e:
+        print(f"[FAIL] Could not import {module_name}: {e}")
+        print(f"MCP_ROOT: {MCP_ROOT}")
+        print(f"sys.path: {sys.path[:3]}")
+        return 1
+    except Exception as e:
+        print(f"[FAIL] Error running {command}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,14 @@
+#!/bin/bash
+# MCP Post-checkout Hook
+# Warm up context
+echo "[MCP] Warming context for new branch..."
+# Use virtual environment python if available
+if [ -f "./.venv/Scripts/python" ]; then
+    PYTHON_CMD="./.venv/Scripts/python"
+elif [ -f "./.venv/bin/python" ]; then
+    PYTHON_CMD="./.venv/bin/python"
+else
+    PYTHON_CMD="python"
+fi
+
+$PYTHON_CMD mcp-agentic-context/mcp-agentic-rules/mcp.py warm

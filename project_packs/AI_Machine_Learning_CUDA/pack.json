@@ -1,0 +1,5 @@
+{
+  "name": "AI_Machine_Learning_CUDA",
+  "required_python": "3.12",
+  "description": "Python ML models, CUDA 12.1 bindings, and offline wheel packages"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Data_Science_Analytics",
+  "required_python": "3.11",
+  "description": "Scientific computing, pandas, NumPy, interactive visualization, and modeling tools"
+}

@@ -1,0 +1,19 @@
+# Import all the tools we need
+
+# Regular EDA (exploratory data analysis) and plotting libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+%matplotlib inline 
+# We want our plots to appear inside the notebook
+
+# mModels from Scitkit-Learn
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+
+# Model evaluations
+from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV, GridSearchCV
+from sklearn.metrics import confusion_matrix, classification_report, precision_score, recall_score, f1_score, RocCurveDisplay

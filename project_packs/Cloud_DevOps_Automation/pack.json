@@ -1,0 +1,5 @@
+{
+  "name": "Cloud_DevOps_Automation",
+  "required_python": "3.11",
+  "description": "Cloud APIs, container orchestration, orchestration scripting, and CI/CD tools"
+}

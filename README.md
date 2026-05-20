@@ -1,0 +1,462 @@
+# MCP Agentic Context (formerly MCP Global Rules)
+
+> **AI Agent Enhancement & Unlimited Context Package** — 53 Scripts | 48 Commands | 6 Git Hooks | Offline-First
+
+Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
+
+MCP Agentic Context is a drop-in AI agent enhancement system that installs into any project and gives every AI agent working on it a shared set of tools, memory, code analysis, security scanning, autonomous development workflows, and enforced quality gates. 
+
+Equipped with **Dynamic Context Budgeting & Linguistic Zoom**, **Two-Tier Macro Codebase Dependency Graphs**, a **Preemptive Self-Healing Background Daemon**, and a **Vectorized Activity Ledger**, it is designed to grant AI agents virtually unlimited context capability and preemptive developer safeguards. It works completely offline and requires only Python 3.8+.
+
+Originally built to accelerate ML research and experimentation workflows, MCP Global has grown into a powerful, general-purpose tool that works equally well for any kind of software project.
+
+---
+
+## What Is This?
+
+When an AI agent (Claude, Gemini, GPT-4, local LLM, etc.) works on a project with MCP Global installed, it gains access to:
+
+- **Persistent memory** across sessions — agents remember decisions, file locations, and learned patterns
+- **Semantic code search** — find related code by meaning, not just keyword
+- **Automated code review** — quality checks enforced at commit time via git hooks
+- **Security auditing** — scan for secrets, vulnerabilities, and injection risks before every push
+- **Bug prediction** — AI-powered analysis to catch issues before they ship
+- **Multi-agent coordination** — agents on different machines collaborate via `mcp comms`
+- **Full offline operation** — 90+ bundled wheel files, no internet required
+
+---
+
+## Quick Install
+
+### Windows (PowerShell)
+
+```powershell
+# From your project root:
+.\mcp-agentic-rules\install.ps1 -Pack Web_Dev
+```
+
+### Linux / Mac
+
+```bash
+# From your project root:
+./mcp-agentic-rules/install.sh --pack Web_Dev
+```
+
+### Manual Install
+
+```bash
+# 1. Copy mcp-agentic-rules into your project root
+cp -r /path/to/mcp-agentic-rules ./mcp-agentic-rules
+
+# 2. Initialize git if needed
+git init
+
+# 3. Install hooks manually
+cp mcp-agentic-rules/.git-hooks/* .git/hooks/
+chmod +x .git/hooks/*
+
+# 4. Create data directory
+mkdir -p .mcp
+
+# 5. Build initial indexes
+python mcp-agentic-rules/mcp.py index-all
+```
+
+### What Gets Installed
+
+| Component | Description |
+|-----------|-------------|
+| `mcp-agentic-rules/` | 53 Python scripts, main entry point (`mcp.py`) |
+| `.mcp/` | Index data directory (auto-generated, auto-updated) |
+| `.git/hooks/pre-commit` | Blocks commits with critical issues |
+| `.git/hooks/post-commit` | Updates learning and indexes |
+| `.git/hooks/commit-msg` | Enriches commit context |
+| `.git/hooks/pre-push` | Strict security + architecture check |
+| `.git/hooks/post-checkout` | Warms context for new branch |
+| `.git/hooks/post-merge` | Re-indexes after merge |
+| `AI_AGENT_MCP.md` | Quick-reference for AI agents |
+
+---
+
+## Requirements
+
+- **Python 3.8+** (3.11+ recommended for full vendor package support)
+- **Git** (for hooks and history indexing)
+- No other dependencies required for core tools — all 53 scripts use Python stdlib only
+- Optional: bundled vendor wheels in `vendor/python-packages-py311/` for enhanced analysis
+
+---
+
+## Command Reference (50 Commands)
+
+Run all commands from your **project root**:
+
+```bash
+python mcp-agentic-rules/mcp.py <command> [args]
+```
+
+### Context & Search
+
+| Command | Description |
+|---------|-------------|
+| `autocontext` | Auto-load all relevant context for the current task |
+| `context "query"` | Get targeted context for a specific topic |
+| `search "query"` | Semantic code search by meaning |
+| `find "name"` | Find files and components by natural language |
+
+### AI Memory
+
+| Command | Description |
+|---------|-------------|
+| `remember "key" "value"` | Store a persistent knowledge item |
+| `recall "query"` | Search stored memories and learned patterns |
+| `forget "key"` | Remove a memory item |
+| `learn [--patterns]` | View and reinforce learned patterns |
+
+### Code Quality
+
+| Command | Description |
+|---------|-------------|
+| `review [path] [--strict]` | Full automated code review |
+| `docs [path] [--write]` | Generate or check docstrings |
+| `deadcode [path]` | Find unused functions, classes, imports |
+| `fix [path] [--safe] [--apply]` | Auto-fix syntax, formatting, and lint issues |
+| `errors [path]` | Analyze error handling patterns |
+| `coverage [path]` | Check documentation coverage (gate: >50%) |
+
+### Analysis
+
+| Command | Description |
+|---------|-------------|
+| `security [path]` | Security audit — secrets, injection, CVEs |
+| `profile [path]` | Complexity and performance analysis |
+| `architecture [path]` | Validate project structure |
+| `deps [path]` | Dependency graph and risk analysis |
+| `refactor [path]` | Suggest refactoring opportunities |
+| `migrate [path]` | Detect migration issues |
+
+### AI Prediction
+
+| Command | Description |
+|---------|-------------|
+| `predict-bugs [file]` | AI-powered bug prediction |
+| `risk-score` | Calculate risk score for staged changes |
+| `impact [file]` | Determine what a file change will break |
+
+### Indexing
+
+| Command | Description |
+|---------|-------------|
+| `index-all` | Full rebuild of all 7 indexes |
+| `git-history [file]` | Index and query git commit history |
+| `todos` | List all TODO/FIXME items by priority |
+| `test-coverage` | Index coverage data from pytest |
+| `doc-index [path]` | Index documentation files |
+| `config-index` | Index environment variables and config files |
+
+### Testing
+
+| Command | Description |
+|---------|-------------|
+| `test [path]` | Generate pytest test stubs |
+| `test-gen [file] --impl` | Generate full test implementations |
+| `apidocs [path]` | Generate API documentation |
+
+### Automation
+
+| Command | Description |
+|---------|-------------|
+| `watch [path]` | Live index updates on file change |
+| `warm` | Pre-warm all indexes (run at session start) |
+| `summarize [--output FILE]` | Generate codebase summary |
+| `changelog` | Auto-generate changelog from git history |
+
+### Multi-Agent Coordination
+
+| Command | Description |
+|---------|-------------|
+| `comms status` | Check peer agent presence |
+| `comms send <peer> <type> "msg"` | Send task or message to peer agent |
+| `comms listen` | Poll for messages from peers |
+| `comms heartbeat "status" "detail"` | Update your agent's status |
+| `comms collaborate` | Enter autonomous back-and-forth loop |
+| `model status` | Check current AI model assignments |
+| `model switch` | Switch to next priority model |
+
+### CI/CD
+
+| Command | Description |
+|---------|-------------|
+| `github-action` | Generate GitHub Actions workflow |
+| `pipeline [--gitlab]` | Generate CI/CD pipeline config |
+
+### Project Packs
+
+| Command | Description |
+|---------|-------------|
+| `pack list` | List available project packs (e.g., `ML_Wheels`, `Web_Dev`) |
+| `pack install <pack_name>` | Setup a virtual environment and install pack dependencies |
+
+### Setup
+
+| Command | Description |
+|---------|-------------|
+| `setup --all` | Full setup (hooks, profile, indexes) |
+| `setup --hooks` | Install git hooks only |
+| `setup --profile` | Install shell profile aliases |
+| `record action "..."` | Record an action to MCP log |
+
+---
+
+## AI Agent Trigger Commands
+
+Two special trigger words activate predefined autonomous workflows:
+
+### `dev` — Autonomous Development Mode
+
+When you say **"dev"** to your AI agent, it will:
+
+1. Find and load MCP tools automatically
+2. Read `README.md` as the single source of truth
+3. Run `autocontext` and `recall "project"`
+4. Identify the next priority task via `todos`
+5. **Implement autonomously** — no human input required
+6. Commit progress incrementally, following quality gates
+
+### `go` — Context + Suggestions Mode
+
+When you say **"go"** to your AI agent, it will:
+
+1. Load context and read `README.md`
+2. Identify tasks and gaps via `todos`
+3. **Stop and present findings** — does NOT make changes
+4. List suggested next steps with priority and complexity estimates
+5. Wait for your explicit direction
+
+---
+
+## Enforced Quality Gates
+
+Git hooks automatically block operations that fail quality standards:
+
+| Hook | Trigger | Blocks On |
+|------|---------|-----------|
+| `pre-commit` | Every commit | CRITICAL security issues, code review errors |
+| `pre-push` | Every push | Doc coverage < 50%, architecture violations |
+| `commit-msg` | Every commit | N/A — enriches context only |
+| `post-commit` | Every commit | N/A — updates learning and indexes |
+| `post-checkout` | Branch switch | N/A — warms context |
+| `post-merge` | After merge | N/A — re-indexes |
+
+---
+
+## Mandatory AI Agent Workflow
+
+AI agents working on MCP-enabled projects MUST follow this workflow:
+
+### Before Making Changes
+
+```bash
+python mcp-agentic-rules/mcp.py autocontext        # Load context
+python mcp-agentic-rules/mcp.py recall "topic"     # Check memory
+python mcp-agentic-rules/mcp.py find "component"   # Find related files
+python mcp-agentic-rules/mcp.py impact file.py     # What could break?
+python mcp-agentic-rules/mcp.py predict-bugs file.py  # Bug prediction
+```
+
+### During Development
+
+```bash
+python mcp-agentic-rules/mcp.py docs src/ --write  # Add docstrings
+python mcp-agentic-rules/mcp.py fix src/           # Auto-fix issues
+python mcp-agentic-rules/mcp.py review src/        # Continuous review
+```
+
+### Before Committing
+
+```bash
+python mcp-agentic-rules/mcp.py review src/ --strict   # Full review
+python mcp-agentic-rules/mcp.py security src/          # Security audit
+python mcp-agentic-rules/mcp.py deadcode src/          # Remove unused code
+python mcp-agentic-rules/mcp.py coverage src/          # Check doc coverage
+```
+
+### Before Pushing
+
+```bash
+python mcp-agentic-rules/mcp.py architecture src/            # Validate structure
+python mcp-agentic-rules/mcp.py profile src/                 # Check complexity
+python mcp-agentic-rules/mcp.py summarize --output SUMMARY.md  # Update context
+```
+
+### Record Decisions
+
+```bash
+python mcp-agentic-rules/mcp.py remember "auth_handler" "src/auth.py"
+python mcp-agentic-rules/mcp.py record action "Implemented feature X"
+python mcp-agentic-rules/mcp.py record decision "Chose approach Y because Z"
+```
+
+---
+
+## Multi-Agent Coordination
+
+MCP supports multiple AI agents collaborating across machines via the `comms` system.
+
+### Coordination Workflow
+
+```bash
+# 1. Check if peer is active before starting
+python mcp-agentic-rules/mcp.py comms status
+
+# 2. Announce your work
+python mcp-agentic-rules/mcp.py comms heartbeat "active" "starting auth refactor"
+
+# 3. Delegate a task to a peer
+python mcp-agentic-rules/mcp.py comms send wizardpanda task "Run security scan on api/"
+
+# 4. Listen for results
+python mcp-agentic-rules/mcp.py comms listen
+
+# 5. Enter autonomous back-and-forth loop
+python mcp-agentic-rules/mcp.py comms collaborate
+```
+
+### Model Priority Enforcement
+
+Agents MUST use models in this order:
+
+1. **Gemini Flash** — Primary, default for all tasks
+2. **Claude Opus** — Secondary, for complex reasoning
+3. **Local LLM** — Fallback, zero-dependency operation
+
+Use `python mcp-agentic-rules/mcp.py model status` to verify and `model switch` to change.
+
+---
+
+## NSync: Remote Execution Workflow
+
+For tasks that need to run on a remote machine (e.g., WizardPanda / Raspberry Pi):
+
+```bash
+# Initialize a new project for remote sync
+python mcp-agentic-rules/mcp.py nsync init-project my_project
+
+# Watch for changes and sync automatically
+python mcp-agentic-rules/mcp.py watch .
+
+# Run a script on the remote machine
+python mcp-agentic-rules/mcp.py nsync run my_project/main.py
+```
+
+---
+
+## Dependency & Vendor Packages
+
+### Core Scripts (No Installation Required)
+
+All 53 Python scripts use **stdlib only** — Python 3.8+ standard library. Zero external dependencies for core functionality.
+
+### Bundled Vendor Wheels (Offline-First)
+
+Located in `vendor/python-packages-py311/` — install without internet access:
+
+```bash
+pip install --no-index --find-links=vendor/python-packages-py311 pylint flake8 black mypy bandit pytest
+```
+
+Key bundled packages:
+
+| Category | Packages |
+|----------|----------|
+| **Code Quality** | pylint 4.0.4, flake8 7.3.0, black 25.12.0, isort 7.0.0, mypy 1.19.1 |
+| **Security** | bandit 1.9.2, safety 3.7.0, pip-audit 2.10.0 |
+| **Testing** | pytest 9.0.2, pytest-cov 7.0.0, coverage 7.13.1 |
+| **Analysis** | radon 6.0.1, astroid 4.0.2 |
+| **Utilities** | rich 14.2.0, pydantic 2.12.5, requests 2.32.5, cryptography 46.0.3 |
+
+---
+
+## Project Structure
+
+```
+mcp-agentic-rules/
+├── mcp.py                    # Main entry point (run this)
+├── install.ps1               # Windows one-command installer
+├── install.sh                # Linux/Mac one-command installer
+├── global_rules.md           # Full AI agent rules (add to agent instructions)
+├── AI_AGENT_INSTRUCTIONS.md  # Concise enforced workflow reference
+├── DEPENDENCIES.md           # Full dependency documentation
+├── scripts/                  # 53 Python tool modules
+│   ├── autocontext.py        # Context auto-loader
+│   ├── memory.py             # Persistent AI memory
+│   ├── review.py             # Code review automation
+│   ├── security.py           # Security auditing
+│   ├── predict.py            # Bug prediction
+│   ├── impact.py             # Change impact analysis
+│   ├── vector_store.py       # Semantic search embeddings
+│   ├── agent_comms.py        # Multi-agent coordination
+│   ├── nsync.py              # Remote sync and execution
+│   ├── auto_test.py          # Test generation
+│   ├── index_all.py          # Full index rebuild
+│   └── ...                   # 42 more tools
+├── .git-hooks/               # 6 enforceable git hooks
+│   ├── pre-commit
+│   ├── post-commit
+│   ├── commit-msg
+│   ├── pre-push
+│   ├── post-checkout
+│   └── post-merge
+├── vendor/                   # Offline packages
+│   ├── python-packages-py311/  # 90+ wheel files
+│   └── mcp-servers/            # MCP server configs
+└── config/                   # Configuration templates
+```
+
+---
+
+## Core Principles
+
+These principles are enforced by the system and must be followed by all agents:
+
+1. **Fix Properly, Never Disable** — Always fix issues completely. Never restrict, disable, or reduce capabilities. All integrations must build on what already exists.
+
+2. **README as Single Source of Truth** — `README.md` defines project goals and roadmap. All agent decisions must align with it.
+
+3. **No Emojis in Code** — Emojis in source code cause encoding errors across devices and platforms. Prohibited unless explicitly requested.
+
+4. **Autonomous Collaboration** — Agents must coordinate via `mcp comms` to avoid conflicts. Zero human intervention is the goal.
+
+5. **Model Priority Enforcement** — Gemini Flash first, Claude Opus second, local LLM as fallback. Switch automatically on rate limits.
+
+---
+
+## About the Author
+
+MCP Global was created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**, a machine learning engineer specializing in:
+
+- Designing and training research AI models using **PyTorch** and (occasionally) **TensorFlow**
+- Building entire **AI model architectures from scratch** — transformers, custom attention mechanisms, novel training paradigms
+- End-to-end ML research pipelines, from dataset curation through training, evaluation, and deployment
+
+This project was born out of a need to move faster across many parallel research experiments. Managing code quality, context, memory, and agent coordination by hand across dozens of experimental branches was a constant bottleneck. MCP Global was built to eliminate that overhead entirely.
+
+While it was designed with ML research workflows in mind, the system is completely general-purpose and has proven equally effective for web development, systems programming, data engineering, and any other project where AI agents are part of the development process.
+
+> If you find this useful, give it a star and check out my other work at [github.com/FatStinkyPanda](https://github.com/FatStinkyPanda).
+
+---
+
+## License
+
+MIT
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Run `python mcp-agentic-rules/mcp.py index-all` to build indexes
+3. Make your changes following the mandatory workflow above
+4. Ensure `python mcp-agentic-rules/mcp.py review .` and `security .` pass clean
+5. Open a pull request with a clear description of what changed and why

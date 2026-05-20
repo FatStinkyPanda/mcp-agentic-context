@@ -1,0 +1,60 @@
+# Test project (for development only)
+test_project/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.whl
+project_packs/*/python/
+
+
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MCP runtime data (project-specific, auto-regenerated — do not commit)
+.mcp/
+
+# Temporary Claude/AI agent session files
+tmpclaude-*
+tmp-*
+
+# AI agent working files (machine-specific)
+.agent
+.claude
+.gemini
+
+# Screenshot artifacts
+*.png
+*.jpg
+*.jpeg

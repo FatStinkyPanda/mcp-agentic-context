@@ -1,0 +1,63 @@
+#!/bin/bash
+# MCP Pre-push Hook - ENHANCED
+# Final quality gate with bypass verification
+set -e
+
+echo ""
+echo "======================================================"
+echo "[MCP] PRE-PUSH: Final quality gate"
+echo "======================================================"
+
+# Detect Python
+if [ -f "./.venv/Scripts/python" ]; then
+    PYTHON_CMD="./.venv/Scripts/python"
+elif [ -f "./.venv/bin/python" ]; then
+    PYTHON_CMD="./.venv/bin/python"
+else
+    PYTHON_CMD="python"
+fi
+
+# Find mcp.py path
+if [ -f "mcp-agentic-rules/mcp.py" ]; then
+    MCP="mcp-agentic-rules/mcp.py"
+elif [ -f "mcp-agentic-context/mcp-agentic-rules/mcp.py" ]; then
+    MCP="mcp-agentic-context/mcp-agentic-rules/mcp.py"
+else
+    echo "[MCP] Warning: mcp.py not found"
+    exit 0
+fi
+
+# CRITICAL: Verify no bypassed commits
+echo "[1/3] Verifying hook compliance..."
+$PYTHON_CMD $MCP hook-guardian --verify-all
+GUARDIAN_EXIT=$?
+
+if [ $GUARDIAN_EXIT -ne 0 ]; then
+    echo ""
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "[MCP] WARNING: BYPASSED COMMITS DETECTED"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo ""
+    echo "Some commits skipped pre-commit checks (--no-verify)."
+    echo "This is logged and tracked by MCP."
+    echo ""
+    echo "To reconcile: mcp hook-guardian --reconcile"
+    echo ""
+    # Note: We warn but don't block - uncomment next line to block
+    # exit 1
+fi
+
+# Security scan
+echo "[2/3] Final security scan..."
+$PYTHON_CMD $MCP security . 2>/dev/null || true
+
+# Architecture check
+echo "[3/3] Architecture validation..."
+$PYTHON_CMD $MCP architecture . --strict 2>/dev/null || true
+
+echo ""
+echo "[MCP] Pre-push validation complete"
+echo "======================================================"
+
+# Git LFS support
+command -v git-lfs >/dev/null 2>&1 && git lfs pre-push "$@" || true
