@@ -554,7 +554,42 @@ def get_auto_context(
         for path, formatted, _ in budgeted_semantic_files:
             final_output.append(f"## {Path(path).name} (Relevant)\n# {path}\n```python\n{formatted}\n```\n")
 
-    return "\n".join(final_output)
+    return _enforce_hard_cap("\n".join(final_output), token_budget)
+
+
+def _enforce_hard_cap(text: str, token_budget: int) -> str:
+    """
+    Enforce the overall budget on the assembled payload. The per-section
+    partitions estimate sizes heterogeneously (chars vs words), so without a
+    final cap the output can flood an agent's context on a large repo.
+    """
+    hard_cap = max(2000, token_budget * 4)  # rough chars-per-token
+    if len(text) <= hard_cap:
+        return text
+    notice = ("\n\n[TRUNCATED] Context exceeded the budget "
+              "(%d chars > %d). Raise it with --budget N." % (len(text), hard_cap))
+    return text[:hard_cap - len(notice)] + notice
+
+
+def _parse_budget(argv):
+    """
+    Extract --budget N (token budget) from an argv list. Returns the budget
+    and the remaining argv with the flag and its value removed, so the value
+    is never mistaken for part of the task description.
+    """
+    budget = 8000
+    argv = list(argv)
+    while '--budget' in argv:
+        i = argv.index('--budget')
+        if i + 1 < len(argv):
+            try:
+                budget = max(500, int(argv[i + 1]))
+            except ValueError:
+                pass
+            del argv[i:i + 2]
+        else:
+            del argv[i]
+    return budget, argv
 
 # ... (Main function kept same, calling get_auto_context)
 
@@ -570,7 +605,8 @@ def main():
     """CLI entry point."""
     Console.header("Auto-Context Loader")
 
-    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    token_budget, argv_rest = _parse_budget(sys.argv[1:])
+    args = [a for a in argv_rest if not a.startswith('-')]
 
     root = find_project_root() or Path.cwd()
 
@@ -590,7 +626,7 @@ def main():
 
     if '--auto' in sys.argv or not args:
         task = ' '.join(args) if args else ""
-        context = get_auto_context(task=task, root=root)
+        context = get_auto_context(task=task, token_budget=token_budget, root=root)
         print(context)
         return 0
 
