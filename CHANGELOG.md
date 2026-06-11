@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.0.2 (2026-06-11)
+
+- review and security accept single-file paths (previously scanned 0
+  files and reported PASSED); a lone JS/TS file resolves its owning
+  project via the nearest package.json and eslint targets just that file
+- autocontext code fences derive their language from the file extension
+  instead of always claiming python
+- autocontext caps each memory value at 400 chars in its memory layer so
+  one verbose entry (e.g. a legacy auto-snapshot) cannot consume the
+  whole memory budget; legacy pre-scoping snapshot pollution in shared
+  stores should be purged (see scripts/clean-snapshot-memories.py pattern)
+
 ## v2.0.1 (2026-06-10)
 
 - MCP server: four new tools join the native set - impact (what breaks if
