@@ -37,19 +37,25 @@ if (-not $IsGitRepo) {
     Write-Warn "Not a git repository. Some features will be limited."
 }
 
-# Detect Python
+# Detect Python. Prefer 'python': on Windows, 'python3' usually resolves to
+# the Microsoft Store stub, which is on PATH but is not a working interpreter.
+# Validate that the candidate actually executes and reports a version.
 $PythonCmd = $null
-if (Get-Command "python3" -ErrorAction SilentlyContinue) {
-    $PythonCmd = "python3"
+$PythonVersion = $null
+foreach ($candidate in @("python", "python3", "py")) {
+    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+        $probe = & $candidate --version 2>&1
+        if ("$probe" -match "Python \d") {
+            $PythonCmd = $candidate
+            $PythonVersion = "$probe".Trim()
+            break
+        }
+    }
 }
-elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
-    $PythonCmd = "python"
-}
-else {
-    Write-Fail "Python not found. Please install Python 3.8+"
+if (-not $PythonCmd) {
+    Write-Fail "No working Python found (the Microsoft Store stub does not count). Please install Python 3.8+"
 }
 
-$PythonVersion = & $PythonCmd --version 2>&1
 Write-Info "Python: $PythonCmd ($PythonVersion)"
 
 # Paths
