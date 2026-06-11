@@ -55,6 +55,23 @@ Add `global_rules.md` to your AI agent's rules/instructions system.
 | **CI/CD**      | `github-action`, `pipeline`                               |
 | **Setup**      | `setup --all`, `warm`                                     |
 
+## Language and Scale Support
+
+Semantic search and indexing are language-agnostic and built to scale on large
+monorepos:
+
+- **Languages**: Python, JavaScript/TypeScript (including JSX/TSX/Vue/Svelte),
+  Go, Rust, Java/Kotlin, C/C++, C#, Ruby, PHP, Swift, and more.
+- **Directory pruning**: ignored trees (`node_modules`, `.git`, `dist`,
+  `.next`, `build`, `target`, `vendor`, ...) are pruned during the walk and
+  never descended into; simple `.gitignore` directory entries are also honoured.
+- **Bounded work**: minified bundles and oversized files are skipped; a full
+  index is capped at `MCP_MAX_FILES` files (default 20000, set `0` for
+  unlimited).
+- **Deterministic offline search**: when `sentence-transformers` is not
+  installed, a deterministic, identifier-aware fallback embedding is used, so
+  indexed and queried vectors share the same space with no model download.
+
 ## Hooks (Auto-Enforced)
 
 | Hook          | Actions                                |
