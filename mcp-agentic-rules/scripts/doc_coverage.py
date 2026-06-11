@@ -10,7 +10,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import ast
 import re
 import sys

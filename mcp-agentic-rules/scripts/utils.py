@@ -332,6 +332,66 @@ def find_project_root(start: Path = None) -> Optional[Path]:
     return None
 
 
+def get_project_boundary(start: Path = None) -> Optional[Path]:
+    """
+    Get the strict project boundary where mcp-agentic-context is installed.
+
+    Resolution order:
+    1. PROJECT_ROOT environment variable (set by mcp.py on startup)
+    2. .mcp/project_root marker file (created during installation)
+    3. Parent of mcp-agentic-rules directory (fallback)
+
+    The user home directory is never returned from the marker walk; the
+    global ~/.mcp store must not be mistaken for a project.
+    """
+    # 1. Check PROJECT_ROOT environment variable (strongest signal)
+    project_root_env = os.environ.get('PROJECT_ROOT')
+    if project_root_env:
+        project_root = Path(project_root_env).resolve()
+        if project_root.exists():
+            return project_root
+
+    # 2. Look for .mcp/project_root marker file
+    if start is None:
+        start = Path.cwd()
+
+    home = Path.home().resolve()
+    current = Path(start).resolve()
+    max_depth = 20
+    depth = 0
+    while current != current.parent and current != home and depth < max_depth:
+        marker_file = current / '.mcp' / 'project_root'
+        if marker_file.exists():
+            try:
+                marker_content = marker_file.read_text(encoding='utf-8').strip()
+                if marker_content:
+                    marker_path = Path(marker_content).resolve()
+                    if marker_path.exists():
+                        return marker_path
+                return current
+            except Exception:
+                return current
+        current = current.parent
+        depth += 1
+
+    # 3. Fallback: Use parent of mcp-agentic-rules directory
+    mcp_root_env = os.environ.get('MCP_ROOT')
+    if mcp_root_env:
+        mcp_root = Path(mcp_root_env).resolve()
+        if mcp_root.exists():
+            return mcp_root.parent
+
+    # 4. Ultimate fallback: try to find mcp-agentic-rules from __file__
+    try:
+        package_root = Path(__file__).resolve().parent.parent
+        if package_root.name == 'mcp-agentic-rules':
+            return package_root.parent
+    except Exception:
+        pass
+
+    return None
+
+
 def get_package_root() -> Path:
     """Get the absolute path to the mcp-agentic-rules package directory."""
     mcp_root_env = os.environ.get('MCP_ROOT')

@@ -7,6 +7,7 @@ Polls Telegram for user instructions and dispatches them to active agents.
 from pathlib import Path
 import json
 import os
+import subprocess
 import sys
 import time
 

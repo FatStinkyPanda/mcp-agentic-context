@@ -162,6 +162,12 @@ Intelligence:
     skeleton [path] [--budget N] Signature-only view of files/dirs
     state [--set-goal/--add-task/--done N/--note] Project goals and tasks
     refactor [path]             Suggest refactorings
+    heal "error" [--learn/--lessons] Fix suggestions and lessons learned
+    graph build|"function"      Call graph relationships
+    predict-context "task"      Pre-bundle predicted files for a task
+    hybrid-search "query"       Multi-dimensional knowledge graph search
+    learn-patterns              Update co-modification correlations
+    hook-guardian [--verify-all] Commit tracking and bypass detection
 
 Indexes:
     index-all                   Full reindex (all 7)
@@ -247,6 +253,16 @@ COMMANDS = {
     'skeleton': 'skeleton',
     'state': 'project_state',
     'project-state': 'project_state',
+    # Deep-context intelligence (restored from the legacy dev tree)
+    'heal': 'auto_heal',
+    'graph': 'call_graph',
+    'call-graph': 'call_graph',
+    'correlate': 'correlation_tracker',
+    'learn-patterns': 'correlation_tracker',
+    'hook-guardian': 'hook_guardian',
+    'hybrid-search': 'hybrid_graph',
+    'hybrid': 'hybrid_graph',
+    'predict-context': 'predict_context',
     'pattern': 'astgrep',
     'parse': 'treesitter_utils',
     'embed': 'embeddings',
