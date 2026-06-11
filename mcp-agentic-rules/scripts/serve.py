@@ -69,6 +69,7 @@ class ServeAPI:
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._lock = threading.Lock()
         from .vector_store import VectorStore
         self.store = VectorStore()
         if self.store.load():
@@ -85,9 +86,18 @@ class ServeAPI:
             return {"ok": True, "pid": os.getpid(),
                     "chunks": len(self.store.chunks)}
         if op == "search":
-            results = self.store.search(str(req.get("query", "")),
-                                        k=int(req.get("k", 10)))
-            return {"ok": True, "results": [{
+            # Auto-fresh: reconcile the index with the file system before
+            # answering, so an agent that just edited files never receives
+            # stale results. No-op when nothing changed.
+            with self._lock:
+                refreshed = False
+                try:
+                    refreshed = self.store.refresh(self.root)
+                except Exception as e:
+                    Console.warn(f"Index refresh failed: {e}")
+                results = self.store.search(str(req.get("query", "")),
+                                            k=int(req.get("k", 10)))
+            return {"ok": True, "refreshed": refreshed, "results": [{
                 "path": r.chunk.path,
                 "line": r.chunk.line_start,
                 "score": r.score,

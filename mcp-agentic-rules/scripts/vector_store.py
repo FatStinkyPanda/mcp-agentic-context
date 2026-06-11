@@ -98,6 +98,38 @@ class VectorStore:
         except OSError:
             return None
 
+    def _collect_fingerprints(self, root: Path,
+                              exclude_patterns: List[str] = None) -> Dict[str, List[float]]:
+        """Fingerprints for every indexable file under root (walk + stat only)."""
+        root = Path(root)
+        extra = set(exclude_patterns) if exclude_patterns else None
+        meta: Dict[str, List[float]] = {}
+        for f in find_source_files(root, exclude_dirs=extra, max_files=_max_files()):
+            fp = self._fingerprint(Path(f))
+            if fp:
+                try:
+                    rel = str(Path(f).relative_to(root))
+                except ValueError:
+                    rel = str(f)
+                meta[rel] = fp
+        return meta
+
+    def needs_refresh(self, root: Path) -> bool:
+        """True when files on disk differ from what the index was built from."""
+        return self._collect_fingerprints(root) != self.file_meta
+
+    def refresh(self, root: Path) -> bool:
+        """
+        Reconcile the index with the file system, incrementally, ONLY when
+        something actually changed. The staleness check is a cheap walk+stat;
+        when nothing changed this does no embedding, no FAISS rebuild, and no
+        disk writes. Returns True when an update ran.
+        """
+        if not self.needs_refresh(root):
+            return False
+        self.index_codebase(root)
+        return True
+
     def _evict_paths(self, rel_paths) -> int:
         """Drop all chunks and embeddings belonging to the given rel paths."""
         rel_paths = set(rel_paths)
