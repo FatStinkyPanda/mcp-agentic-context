@@ -194,6 +194,7 @@ Automation:
     autocontext [--budget N]    Auto-load context
     warm                        Pre-warm indexes
     serve [--background/--status/--stop] Warm daemon: instant search/recall
+    mcp-serve                   Model Context Protocol server over stdio
 
 Setup & Diagnostics:
     setup --all                 Full setup
@@ -253,6 +254,7 @@ COMMANDS = {
     'autocontext': 'autocontext',
     'auto': 'autocontext',
     'serve': 'serve',
+    'mcp-serve': 'mcp_server',
     # Advanced indexes
     'index-all': 'index_all',
     'git-history': 'git_index',
