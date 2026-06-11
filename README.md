@@ -3,18 +3,19 @@
 > **AI Agent Enhancement & Unlimited Context Package** - 72 Scripts | 76 Commands | 6 Git Hooks | Offline-First Core
 
 [![CI](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml/badge.svg)](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/FatStinkyPanda/mcp-agentic-context)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
+[![Release](https://img.shields.io/badge/release-v2.0.2-blue)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
 
-**New in [v2.0.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/tag/v2.0.0):**
-multi-language semantic search (TypeScript/JS and 25+ languages), incremental auto-fresh indexing
-(0.3s no-change re-index on a 32,000-file monorepo), a warm daemon answering searches in ~0.4s,
-a native Model Context Protocol server for Claude Code/Cursor/Codex, self-advertising installs,
-project-scoped memory, and CI-verified quality on Linux and Windows. Full details in the
-[CHANGELOG](CHANGELOG.md).
+**Latest release: [v2.0.2](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)** -
+single-file review/security support and context-budget hardening, on top of everything the v2.0
+line introduced: multi-language semantic search (TypeScript/JS and 25+ languages), incremental
+auto-fresh indexing (0.3s no-change re-index on a 32,000-file monorepo), a warm daemon answering
+searches in ~0.4s, a native Model Context Protocol server for Claude Code/Cursor/Codex,
+self-advertising installs, project-scoped memory, and CI-verified quality on Linux and Windows.
+Full details in the [CHANGELOG](CHANGELOG.md).
 
 MCP Agentic Context is a drop-in AI agent enhancement system that installs into any project and gives every AI agent working on it a shared set of tools, memory, code analysis, security scanning, autonomous development workflows, and enforced quality gates. 
 
