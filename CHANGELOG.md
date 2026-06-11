@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.0.1 (2026-06-10)
 
 - MCP server: four new tools join the native set - impact (what breaks if
   this file changes), review and security (pre-commit/pre-push gates
