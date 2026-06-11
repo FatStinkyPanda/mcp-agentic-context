@@ -14,30 +14,31 @@ import json
 import sys
 import time
 
-from .utils import Console, find_project_root
+from .utils import Console, find_project_root, find_source_files, SOURCE_EXTENSIONS
+
+
+# Source code plus docs/config, so the doc/config/todo indexes also refresh
+# when those files change (the semantic index only consumes the source ones).
+_CHANGE_DETECT_EXTENSIONS = set(SOURCE_EXTENSIONS) | {
+    '.md', '.mdx', '.rst', '.json', '.yaml', '.yml', '.toml', '.txt',
+}
 
 
 def get_changed_files(root: Path, last_index_time: float) -> list:
-    """Find all files in the project modified after last_index_time."""
+    """
+    Find all files modified after last_index_time.
+
+    Uses the shared directory-pruning walker, so it never descends into
+    node_modules/.git/dist/... - the previous rglob('*') walked those entirely
+    on every incremental scan, which does not scale on large monorepos.
+    """
     changed = []
-    exclude = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'vendor', '.mcp', 'build', 'dist'}
-
-    # We want to scan common source file extensions
-    valid_exts = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp', '.md', '.json', '.yaml', '.yml'}
-
-    for path in root.rglob('*'):
-        # Check if any parent of the path is in the exclude set
+    for path in find_source_files(root, extensions=_CHANGE_DETECT_EXTENSIONS):
         try:
-            parts = path.relative_to(root).parts
-            if any(part in exclude for part in parts):
-                continue
-            if path.is_file() and path.suffix in valid_exts:
-                mtime = path.stat().st_mtime
-                if mtime > last_index_time:
-                    changed.append(path)
-        except Exception:
-            pass
-
+            if path.stat().st_mtime > last_index_time:
+                changed.append(path)
+        except OSError:
+            continue
     return changed
 
 

@@ -11,6 +11,7 @@ Usage:
 import sys
 import re
 import math
+import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -107,27 +108,68 @@ def _preprocess_code(code: str, language: str) -> str:
     return code.lower()
 
 
-def _fallback_embed(text: str, dim: int = 384) -> List[float]:
-    """Simple fallback embedding using hashing + TF-IDF-like approach."""
-    # Tokenize
-    tokens = re.findall(r'[a-z0-9]+', text.lower())
+def _stable_hash(token: str) -> int:
+    """
+    Deterministic 32-bit hash, stable across processes and Python runs.
 
-    if not tokens:
+    The previous implementation used the builtin hash(), which is salted per
+    process via PYTHONHASHSEED. That made index-time and query-time embeddings
+    (run in separate processes) land in different feature buckets, so fallback
+    semantic search returned effectively random results. crc32 is deterministic.
+    """
+    return zlib.crc32(token.encode('utf-8')) & 0xFFFFFFFF
+
+
+_CAMEL_SPLIT = re.compile(r'[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+')
+
+
+def _tokenize(text: str) -> List[str]:
+    """
+    Tokenize text/code into semantic tokens.
+
+    Splits on non-alphanumerics (so snake_case becomes separate tokens) and
+    additionally splits camelCase/PascalCase identifiers into subtokens, so a
+    natural-language query like "user name" can match getUserName in code.
+    """
+    tokens: List[str] = []
+    for word in re.findall(r'[A-Za-z0-9]+', text):
+        low = word.lower()
+        tokens.append(low)
+        parts = _CAMEL_SPLIT.findall(word)
+        if len(parts) > 1:
+            for part in parts:
+                pl = part.lower()
+                if pl and pl != low:
+                    tokens.append(pl)
+    return tokens
+
+
+def _fallback_embed(text: str, dim: int = 384) -> List[float]:
+    """
+    Deterministic fallback embedding using the signed feature-hashing trick.
+
+    Used whenever sentence-transformers is unavailable. Properties:
+    - Deterministic across processes (stable hash), so indexed and queried
+      vectors share the same space - this is what makes search actually work.
+    - Identifier-aware tokenization (camelCase/snake_case split).
+    - Sublinear term weighting and signed buckets to reduce collision bias.
+    """
+    counts: Dict[str, int] = {}
+    for tok in _tokenize(text):
+        counts[tok] = counts.get(tok, 0) + 1
+
+    if not counts:
         return [0.0] * dim
 
-    # Create embedding via feature hashing
     embedding = [0.0] * dim
+    for tok, cnt in counts.items():
+        h = _stable_hash(tok)
+        idx = h % dim
+        sign = 1.0 if (h >> 31) & 1 else -1.0
+        weight = 1.0 + math.log(cnt)  # sublinear term frequency
+        embedding[idx] += sign * weight
 
-    for token in tokens:
-        # Hash token to get index
-        h = hash(token)
-        idx = abs(h) % dim
-
-        # Add weighted value
-        tf = tokens.count(token) / len(tokens)
-        embedding[idx] += tf
-
-    # Normalize
+    # L2 normalize so cosine similarity is well-behaved.
     norm = math.sqrt(sum(x * x for x in embedding))
     if norm > 0:
         embedding = [x / norm for x in embedding]

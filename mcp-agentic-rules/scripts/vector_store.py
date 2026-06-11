@@ -12,14 +12,28 @@ Usage:
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
 import hashlib
 
-from .utils import Console, find_python_files, find_project_root, get_mcp_dir
+from .utils import Console, find_source_files, find_project_root, get_mcp_dir
 from .embeddings import embed_text, embed_texts, cosine_similarity, embedding_dimension
+
+
+# Upper bound on files scanned in a single full index, to keep a pathologically
+# large repo from exhausting memory. Override with MCP_MAX_FILES=0 (unlimited).
+def _max_files() -> Optional[int]:
+    raw = os.environ.get('MCP_MAX_FILES')
+    if raw is None:
+        return 20000
+    try:
+        val = int(raw)
+    except ValueError:
+        return 20000
+    return None if val <= 0 else val
 
 
 # Try to import FAISS
@@ -134,7 +148,14 @@ class VectorStore:
             return len(self.chunks)
 
         else:
-            files = list(find_python_files(root, exclude_patterns))
+            cap = _max_files()
+            extra_excludes = set(exclude_patterns) if exclude_patterns else None
+            files = list(find_source_files(root, exclude_dirs=extra_excludes, max_files=cap))
+            if cap is not None and len(files) >= cap:
+                Console.warn(
+                    f"Reached the {cap}-file scan cap; indexing the first {cap} files. "
+                    "Set MCP_MAX_FILES=0 to index everything."
+                )
             Console.info(f"Found {len(files)} files")
 
             chunks = []
@@ -187,8 +208,16 @@ class VectorStore:
 
         # Detect language
         ext = path.suffix.lower()
-        lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript',
-                    '.go': 'go', '.rs': 'rust', '.java': 'java'}
+        lang_map = {
+            '.py': 'python', '.pyi': 'python',
+            '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+            '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript', '.cts': 'typescript',
+            '.vue': 'vue', '.svelte': 'svelte', '.astro': 'astro',
+            '.go': 'go', '.rs': 'rust', '.java': 'java', '.kt': 'kotlin',
+            '.c': 'c', '.h': 'c', '.cc': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.hpp': 'cpp',
+            '.cs': 'c_sharp', '.rb': 'ruby', '.php': 'php', '.swift': 'swift',
+            '.sh': 'bash', '.bash': 'bash', '.sql': 'sql',
+        }
         language = lang_map.get(ext, 'unknown')
 
         # Create file-level chunk
