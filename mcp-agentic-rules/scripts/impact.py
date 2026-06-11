@@ -14,9 +14,121 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 import ast
 import json
+import re
 import sys
 
-from .utils import Console, find_python_files, find_project_root
+from .utils import Console, find_python_files, find_project_root, find_source_files
+
+JS_EXTS = {'.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'}
+RESOLVE_EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']
+
+# import/export ... from 'spec'  |  import 'spec'  |  require('spec')  |  import('spec')
+JS_IMPORT_RE = re.compile(
+    r"(?:\bimport|\bexport)\s+(?:[^'\";]*?\bfrom\s+)?['\"]([^'\"]+)['\"]"
+    r"|\brequire\(\s*['\"]([^'\"]+)['\"]\s*\)"
+    r"|\bimport\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def parse_workspace_packages(root: Path) -> Dict[str, Path]:
+    """
+    Map workspace package names to their directories using pnpm-workspace.yaml
+    globs and/or the package.json "workspaces" field.
+    """
+    root = Path(root)
+    patterns: List[str] = []
+
+    ws = root / 'pnpm-workspace.yaml'
+    if ws.exists():
+        try:
+            for line in ws.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('- '):
+                    pattern = line[2:].strip().strip('\'"')
+                    if pattern and not pattern.startswith('!'):
+                        patterns.append(pattern)
+        except Exception:
+            pass
+
+    pkg = root / 'package.json'
+    if pkg.exists():
+        try:
+            data = json.loads(pkg.read_text(encoding='utf-8'))
+            workspaces = data.get('workspaces')
+            if isinstance(workspaces, list):
+                patterns.extend(workspaces)
+            elif isinstance(workspaces, dict):
+                patterns.extend(workspaces.get('packages', []))
+        except Exception:
+            pass
+
+    mapping: Dict[str, Path] = {}
+    for pattern in patterns:
+        try:
+            for d in root.glob(pattern):
+                pj = d / 'package.json'
+                if pj.exists():
+                    try:
+                        name = json.loads(pj.read_text(encoding='utf-8')).get('name')
+                        if name:
+                            mapping[name] = d
+                    except Exception:
+                        pass
+        except (ValueError, OSError):
+            pass
+    return mapping
+
+
+def resolve_js_import(spec: str, file_path: Path, root: Path,
+                      workspace_map: Dict[str, Path]) -> Optional[str]:
+    """
+    Resolve a JS/TS import specifier to a repo-relative file key, or None
+    for external packages. Handles relative imports (with extension and
+    /index fallbacks) and pnpm workspace package names incl. subpaths.
+    """
+    candidates: List[Path] = []
+    if spec.startswith('.'):
+        candidates.append((file_path.parent / spec))
+    else:
+        parts = spec.split('/')
+        matched = None
+        for take in (2, 1):  # scoped names (@org/pkg) consume two segments
+            name = '/'.join(parts[:take])
+            if name in workspace_map:
+                matched = (name, '/'.join(parts[take:]))
+                break
+        if not matched:
+            return None
+        name, sub = matched
+        base_dir = workspace_map[name]
+        if sub:
+            candidates.append(base_dir / sub)
+        else:
+            candidates.append(base_dir / 'src' / 'index')
+            candidates.append(base_dir / 'index')
+            try:
+                main = json.loads(
+                    (base_dir / 'package.json').read_text(encoding='utf-8')).get('main')
+                if main:
+                    candidates.append(base_dir / main)
+            except Exception:
+                pass
+
+    for cand in candidates:
+        for ext in RESOLVE_EXTS:
+            p = Path(str(cand) + ext)
+            if p.is_file():
+                try:
+                    return str(p.resolve().relative_to(Path(root).resolve()))
+                except ValueError:
+                    return None
+        for ext in RESOLVE_EXTS[1:]:
+            p = cand / ('index' + ext)
+            if p.is_file():
+                try:
+                    return str(p.resolve().relative_to(Path(root).resolve()))
+                except ValueError:
+                    return None
+    return None
 
 
 @dataclass
@@ -63,9 +175,22 @@ class DependencyGraph:
         self.imports: Dict[str, Set[str]] = defaultdict(set)  # file -> what it imports
         self.imported_by: Dict[str, Set[str]] = defaultdict(set)  # file -> who imports it
         self.module_to_file: Dict[str, str] = {}  # module name -> file path
+        self.all_files: Set[str] = set()  # every file key seen during build
 
-    def add_file(self, file_path: Path, root: Path):
-        """Add a file's imports to the graph."""
+    def add_file(self, file_path: Path, root: Path,
+                 workspace_map: Dict[str, Path] = None):
+        """Add a file's imports to the graph (Python via ast, JS/TS via regex)."""
+        file_key = str(file_path.relative_to(root))
+        suffix = file_path.suffix.lower()
+
+        if suffix in JS_EXTS:
+            self.all_files.add(file_key)
+            self._add_js_file(file_path, root, file_key, workspace_map or {})
+            return
+
+        if suffix not in ('.py', '.pyi'):
+            return
+
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 source = f.read()
@@ -73,7 +198,7 @@ class DependencyGraph:
         except Exception:
             return
 
-        file_key = str(file_path.relative_to(root))
+        self.all_files.add(file_key)
 
         # Register this module
         module_name = str(file_path.relative_to(root).with_suffix('')).replace('\\', '.').replace('/', '.')
@@ -88,17 +213,40 @@ class DependencyGraph:
                 if node.module:
                     self.imports[file_key].add(node.module)
 
-    def build(self, root: Path, exclude_patterns: List[str] = None):
-        """Build full dependency graph."""
-        for file_path in find_python_files(root, exclude_patterns):
-            self.add_file(file_path, root)
+    def _add_js_file(self, file_path: Path, root: Path, file_key: str,
+                     workspace_map: Dict[str, Path]):
+        """Extract and resolve JS/TS import specifiers."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                source = f.read()
+        except Exception:
+            return
 
-        # Build reverse mapping
+        for match in JS_IMPORT_RE.finditer(source):
+            spec = match.group(1) or match.group(2) or match.group(3)
+            if not spec:
+                continue
+            resolved = resolve_js_import(spec, file_path, root, workspace_map)
+            if resolved:
+                self.imports[file_key].add(resolved)
+
+    def build(self, root: Path, exclude_patterns: List[str] = None):
+        """Build full dependency graph for Python and JS/TS sources."""
+        workspace_map = parse_workspace_packages(root)
+        if workspace_map:
+            Console.info(f"Workspace packages: {', '.join(sorted(workspace_map))}")
+        extra = set(exclude_patterns) if exclude_patterns else None
+        for file_path in find_source_files(root, exclude_dirs=extra):
+            self.add_file(file_path, root, workspace_map)
+
+        # Build reverse mapping: Python imports resolve via module names,
+        # JS/TS imports are already repo-relative file keys.
         for file_key, imports in self.imports.items():
             for imp in imports:
-                # Try to resolve import to file
                 if imp in self.module_to_file:
                     self.imported_by[self.module_to_file[imp]].add(file_key)
+                elif imp in self.all_files:
+                    self.imported_by[imp].add(file_key)
 
     def get_dependents(self, file_path: str) -> Set[str]:
         """Get files that depend on this file."""
