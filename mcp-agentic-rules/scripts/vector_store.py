@@ -83,118 +83,148 @@ class VectorStore:
 
         self.chunks: Dict[str, CodeChunk] = {}
         self.embeddings: Dict[str, List[float]] = {}
+        # Per-file fingerprints ({rel_path: [mtime, size]}) enabling
+        # self-contained incremental re-indexing and deletion detection.
+        self.file_meta: Dict[str, List[float]] = {}
         self._faiss_index = None
         self._id_to_idx: Dict[str, int] = {}
         self._idx_to_id: Dict[int, str] = {}
 
-    def index_codebase(self, root: Path, exclude_patterns: List[str] = None, changed_files: List[Path] = None) -> int:
-        """Index all code files in directory, or update only changed_files."""
-        Console.info(f"Indexing codebase in {root}...")
+    @staticmethod
+    def _fingerprint(path: Path) -> Optional[List[float]]:
+        try:
+            st = path.stat()
+            return [st.st_mtime, float(st.st_size)]
+        except OSError:
+            return None
 
-        is_incremental = False
+    def _evict_paths(self, rel_paths) -> int:
+        """Drop all chunks and embeddings belonging to the given rel paths."""
+        rel_paths = set(rel_paths)
+        dead_ids = [cid for cid, ch in self.chunks.items() if ch.path in rel_paths]
+        for cid in dead_ids:
+            self.chunks.pop(cid, None)
+            self.embeddings.pop(cid, None)
+        for rel in rel_paths:
+            self.file_meta.pop(rel, None)
+        return len(dead_ids)
+
+    def index_codebase(self, root: Path, exclude_patterns: List[str] = None,
+                       changed_files: List[Path] = None,
+                       force_full: bool = False) -> int:
+        """
+        Index all code files in a directory.
+
+        Incremental by default: per-file fingerprints (mtime+size) stored with
+        the index let unchanged files keep their embeddings, changed files get
+        re-embedded, and deleted files get evicted. Pass force_full=True (or
+        'index --full' on the CLI) to rebuild from scratch. changed_files
+        keeps the legacy caller-driven update path working.
+        """
+        Console.info(f"Indexing codebase in {root}...")
+        root = Path(root)
+
+        def rel_of(p: Path) -> str:
+            try:
+                return str(Path(p).relative_to(root))
+            except ValueError:
+                return str(p)
+
         if changed_files is not None:
-            if self.load():
-                is_incremental = True
-                Console.info(f"Loaded existing vector index. Performing incremental update for {len(changed_files)} files...")
-            else:
+            if not self.load():
                 Console.warn("No existing vector index found; performing full index.")
                 changed_files = None
 
-        if is_incremental and changed_files is not None:
-            # Convert paths to relative strings for consistency in the index
-            changed_rel_paths = {str(Path(f).relative_to(root)) if Path(f).is_absolute() else str(f) for f in changed_files}
+        if changed_files is not None:
+            changed_rel_paths = {rel_of(Path(f)) for f in changed_files}
+            self._evict_paths(changed_rel_paths)
 
-            # Evict old chunks belonging to changed files
-            old_ids = [cid for cid, chunk in self.chunks.items() if chunk.path in changed_rel_paths]
-            for cid in old_ids:
-                if cid in self.chunks:
-                    del self.chunks[cid]
-                if cid in self.embeddings:
-                    del self.embeddings[cid]
+            # Reconcile deletions the caller cannot see: a changed-files scan
+            # never lists files that vanished, so stale chunks would otherwise
+            # outlive their source forever.
+            dead = {ch.path for ch in self.chunks.values()
+                    if not (root / ch.path).exists()}
+            if dead:
+                evicted = self._evict_paths(dead)
+                Console.info(f"Evicted {evicted} chunks from {len(dead)} deleted files")
 
             # Scan only changed files
             chunks = []
             for path in changed_files:
+                path = Path(path)
                 if path.exists():
-                    file_chunks = self._extract_chunks(path)
-                    for chunk in file_chunks:
-                        try:
-                            rel_path = Path(chunk.path).relative_to(root)
-                            chunk.path = str(rel_path)
-                        except ValueError:
-                            pass
+                    fp = self._fingerprint(path)
+                    if fp:
+                        self.file_meta[rel_of(path)] = fp
+                    for chunk in self._extract_chunks(path):
+                        chunk.path = rel_of(Path(chunk.path))
                         chunks.append(chunk)
 
             Console.info(f"Extracted {len(chunks)} new code chunks")
-
-            if chunks:
-                # Generate embeddings
-                Console.info("Generating embeddings for new chunks...")
-                texts = [c.content[:1000] for c in chunks]
-                embeddings = embed_texts(texts)
-
-                # Store new chunks and embeddings
-                for chunk, emb in zip(chunks, embeddings):
-                    self.chunks[chunk.id] = chunk
-                    self.embeddings[chunk.id] = emb
-
-            # Rebuild FAISS index if available
-            if FAISS_AVAILABLE and NUMPY_AVAILABLE:
-                self._build_faiss_index()
-
-            # Save to disk
+            self._embed_and_store(chunks)
             self.save()
             Console.ok(f"Incremental indexing complete. Total chunks in index: {len(self.chunks)}")
             return len(self.chunks)
 
+        cap = _max_files()
+        extra_excludes = set(exclude_patterns) if exclude_patterns else None
+        files = list(find_source_files(root, exclude_dirs=extra_excludes, max_files=cap))
+        if cap is not None and len(files) >= cap:
+            Console.warn(
+                f"Reached the {cap}-file scan cap; indexing the first {cap} files. "
+                "Set MCP_MAX_FILES=0 to index everything."
+            )
+        Console.info(f"Found {len(files)} files")
+
+        current_meta: Dict[str, List[float]] = {}
+        for f in files:
+            fp = self._fingerprint(Path(f))
+            if fp:
+                current_meta[rel_of(Path(f))] = fp
+
+        prior = (not force_full) and self.load() and bool(self.file_meta)
+        if prior:
+            changed = [f for f in files
+                       if self.file_meta.get(rel_of(Path(f))) != current_meta.get(rel_of(Path(f)))]
+            deleted = set(self.file_meta.keys()) - set(current_meta.keys())
+            if deleted:
+                self._evict_paths(deleted)
+            if changed:
+                self._evict_paths({rel_of(Path(f)) for f in changed})
+            Console.info(
+                f"Incremental: {len(changed)} changed, {len(deleted)} deleted, "
+                f"{len(files) - len(changed)} unchanged")
+            to_scan = changed
         else:
-            cap = _max_files()
-            extra_excludes = set(exclude_patterns) if exclude_patterns else None
-            files = list(find_source_files(root, exclude_dirs=extra_excludes, max_files=cap))
-            if cap is not None and len(files) >= cap:
-                Console.warn(
-                    f"Reached the {cap}-file scan cap; indexing the first {cap} files. "
-                    "Set MCP_MAX_FILES=0 to index everything."
-                )
-            Console.info(f"Found {len(files)} files")
+            self.chunks = {}
+            self.embeddings = {}
+            to_scan = files
 
-            chunks = []
-            for path in files:
-                file_chunks = self._extract_chunks(path)
-                for chunk in file_chunks:
-                    try:
-                        rel_path = Path(chunk.path).relative_to(root)
-                        chunk.path = str(rel_path)
-                    except ValueError:
-                        pass
-                    chunks.append(chunk)
+        chunks = []
+        for path in to_scan:
+            for chunk in self._extract_chunks(path):
+                chunk.path = rel_of(Path(chunk.path))
+                chunks.append(chunk)
 
-            Console.info(f"Extracted {len(chunks)} code chunks")
+        Console.info(f"Extracted {len(chunks)} code chunks")
+        self._embed_and_store(chunks)
+        self.file_meta = current_meta
 
-            if not chunks:
-                return 0
+        self.save()
+        Console.ok(f"Indexed {len(chunks)} new chunks ({len(self.chunks)} total)")
+        return len(self.chunks)
 
-            # Generate embeddings
+    def _embed_and_store(self, chunks: List[CodeChunk]):
+        """Embed new chunks, merge into the store, and refresh FAISS."""
+        if chunks:
             Console.info("Generating embeddings...")
             texts = [c.content[:1000] for c in chunks]
             embeddings = embed_texts(texts)
-
-            # Store chunks and embeddings
-            self.chunks = {}
-            self.embeddings = {}
             for chunk, emb in zip(chunks, embeddings):
                 self.chunks[chunk.id] = chunk
                 self.embeddings[chunk.id] = emb
-
-            # Build FAISS index if available
-            if FAISS_AVAILABLE and NUMPY_AVAILABLE:
-                self._build_faiss_index()
-
-            # Save to disk
-            self.save()
-
-            Console.ok(f"Indexed {len(chunks)} chunks")
-            return len(chunks)
+        if FAISS_AVAILABLE and NUMPY_AVAILABLE:
+            self._build_faiss_index()
 
     def _extract_chunks(self, path: Path) -> List[CodeChunk]:
         """Extract code chunks from file."""
@@ -370,6 +400,11 @@ class VectorStore:
         with open(emb_file, 'w', encoding='utf-8') as f:
             json.dump(self.embeddings, f)
 
+        # Save per-file fingerprints for incremental re-indexing
+        files_file = self.index_path / "files.json"
+        with open(files_file, 'w', encoding='utf-8') as f:
+            json.dump(self.file_meta, f)
+
         Console.ok(f"Index saved to {self.index_path}")
 
     def load(self) -> bool:
@@ -387,6 +422,13 @@ class VectorStore:
 
             with open(emb_file, 'r', encoding='utf-8') as f:
                 self.embeddings = json.load(f)
+
+            files_file = self.index_path / "files.json"
+            if files_file.exists():
+                with open(files_file, 'r', encoding='utf-8') as f:
+                    self.file_meta = json.load(f)
+            else:
+                self.file_meta = {}
 
             if FAISS_AVAILABLE and NUMPY_AVAILABLE:
                 self._build_faiss_index()
@@ -459,7 +501,7 @@ def main():
     if command == 'index':
         root = find_project_root() or Path.cwd()
         path = Path(args[0]) if args else root
-        store.index_codebase(path)
+        store.index_codebase(path, force_full=('--full' in sys.argv))
 
     elif command == 'search':
         query = ' '.join(args)
