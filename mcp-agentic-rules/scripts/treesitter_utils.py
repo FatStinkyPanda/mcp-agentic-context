@@ -139,11 +139,19 @@ def get_parser(language: str) -> Optional[Any]:
         return _parsers[language]
 
     try:
-        # Try to load language
+        # Try to load language. Most grammar packages expose language(), but
+        # some bundle several grammars behind named functions, e.g.
+        # tree_sitter_typescript exposes language_typescript() and
+        # language_tsx() instead of language().
         import importlib
         lang_module = importlib.import_module(f'tree_sitter_{language}')
-        if hasattr(lang_module, 'language'):
-            lang = Language(lang_module.language())
+        lang_fn = None
+        for fn_name in ('language', f'language_{language}'):
+            if hasattr(lang_module, fn_name):
+                lang_fn = getattr(lang_module, fn_name)
+                break
+        if lang_fn is not None:
+            lang = Language(lang_fn())
             parser = Parser(lang)
             _parsers[language] = parser
             _languages[language] = lang
