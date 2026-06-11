@@ -1,6 +1,6 @@
 # MCP Agentic Context (formerly MCP Global Rules)
 
-> **AI Agent Enhancement & Unlimited Context Package** - 64 Scripts | 66 Commands | 6 Git Hooks | Offline-First Core
+> **AI Agent Enhancement & Unlimited Context Package** - 72 Scripts | 76 Commands | 6 Git Hooks | Offline-First Core
 
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
 
@@ -69,7 +69,7 @@ python mcp-agentic-rules/mcp.py index-all
 
 | Component | Description |
 |-----------|-------------|
-| `mcp-agentic-rules/` | 53 Python scripts, main entry point (`mcp.py`) |
+| `mcp-agentic-rules/` | 72 Python scripts, main entry point (`mcp.py`) |
 | `.mcp/` | Index data directory (auto-generated, auto-updated) |
 | `.git/hooks/pre-commit` | Blocks commits with critical issues |
 | `.git/hooks/post-commit` | Updates learning and indexes |
@@ -92,7 +92,7 @@ python mcp-agentic-rules/mcp.py index-all
 
 ---
 
-## Command Reference (66 Commands)
+## Command Reference (76 Commands)
 
 Run all commands from your **project root**:
 
@@ -393,6 +393,20 @@ Key bundled packages:
 ## Project Structure
 
 ```
+mcp-agentic-context/          # This repository
+├── README.md                 # You are here
+├── CLAUDE.md / AGENTS.md     # Agent workflow guidance (auto-discovered)
+├── AI_AGENT_MCP.md           # Quick reference for AI agents
+├── .mcp.json                 # Native MCP server registration
+├── .github/workflows/ci.yml  # Lint + test suite on Linux and Windows
+├── docs/                     # Design notes and setup guides
+├── project_packs/            # Optional per-domain environment packs
+└── mcp-agentic-rules/        # THE package - copy this into projects
+```
+
+The package itself:
+
+```
 mcp-agentic-rules/
 ├── mcp.py                    # Main entry point (run this)
 ├── install.ps1               # Windows one-command installer
@@ -400,7 +414,7 @@ mcp-agentic-rules/
 ├── global_rules.md           # Full AI agent rules (add to agent instructions)
 ├── AI_AGENT_INSTRUCTIONS.md  # Concise enforced workflow reference
 ├── DEPENDENCIES.md           # Full dependency documentation
-├── scripts/                  # 64 Python tool modules
+├── scripts/                  # 72 Python tool modules
 │   ├── autocontext.py        # Context auto-loader
 │   ├── memory.py             # Persistent AI memory
 │   ├── review.py             # Code review automation
@@ -417,7 +431,11 @@ mcp-agentic-rules/
 │   ├── skeleton.py           # Signature-only views
 │   ├── project_state.py      # Shared goals/tasks/notes
 │   ├── js_toolchain.py       # eslint/tsc/pnpm-audit bridge
-│   └── ...                   # 48 more tools
+│   ├── call_graph.py         # Call graph relationships
+│   ├── hybrid_graph.py       # Multi-dimensional knowledge graph
+│   ├── predict_context.py    # Task-based context prediction
+│   ├── auto_heal.py          # Error analysis and lessons learned
+│   └── ...                   # 52 more tools
 ├── .git-hooks/               # 6 enforceable git hooks
 │   ├── pre-commit
 │   ├── post-commit

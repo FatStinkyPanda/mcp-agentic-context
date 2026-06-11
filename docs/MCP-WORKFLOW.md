@@ -119,7 +119,7 @@ Always record important findings and actions to maintain the project's persisten
 
 ---
 
-## 7. Tool Reference (66 Commands)
+## 7. Tool Reference (76 Commands)
 
 | Category | Commands |
 |----------|----------|

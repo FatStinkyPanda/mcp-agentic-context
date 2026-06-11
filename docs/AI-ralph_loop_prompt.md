@@ -18,7 +18,7 @@ You are now the Lead Developer/Orchestrator for **Project-Firefly**. Your goal i
 
 ### 1. INITIALIZATION (Start Here)
 If you are a new agent or starting a fresh session, you **MUST** orient yourself immediately:
-1.  **Load Context:** Run `python mcp-agentic-context/mcp-agentic-rules/mcp.py autocontext`
+1.  **Load Context:** Run `python mcp-agentic-rules/mcp.py autocontext`
 2.  **Read Truth:** Read `README.md` (The Single Source of Truth).
 3.  **Check Status:** Read `task.md` to see what is next.
 
@@ -26,13 +26,13 @@ If you are a new agent or starting a fresh session, you **MUST** orient yourself
 Pick the next incomplete task from `README.md` / `task.md` and execute:
 
 1.  **Pre-Work check:**
-    *   `python mcp-agentic-context/mcp-agentic-rules/mcp.py search "relevant_code"`
-    *   `python mcp-agentic-context/mcp-agentic-rules/mcp.py impact <target_file>`
+    *   `python mcp-agentic-rules/mcp.py search "relevant_code"`
+    *   `python mcp-agentic-rules/mcp.py impact <target_file>`
 2.  **Implement:** Write the code.
 3.  **Verify (MANDATORY):**
-    *   `python mcp-agentic-context/mcp-agentic-rules/mcp.py fix <file>` (Auto-fix lints)
-    *   `python mcp-agentic-context/mcp-agentic-rules/mcp.py security <file>` (Security audit)
-    *   `python mcp-agentic-context/mcp-agentic-rules/mcp.py review <file>` (Quality review)
+    *   `python mcp-agentic-rules/mcp.py fix <file>` (Auto-fix lints)
+    *   `python mcp-agentic-rules/mcp.py security <file>` (Security audit)
+    *   `python mcp-agentic-rules/mcp.py review <file>` (Quality review)
 4.  **Test:** Ensure tests pass. 100% success required.
 
 ### 3. COMMIT & PUSH (The Definition of Done)

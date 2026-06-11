@@ -42,7 +42,7 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# MCP runtime data (project-specific, auto-regenerated — do not commit)
+# MCP runtime data (project-specific, auto-regenerated - do not commit)
 .mcp/
 
 # Temporary Claude/AI agent session files

@@ -14,13 +14,13 @@ Run the automated installer. This will copy the rules to your project root, inst
 
 ```powershell
 # Run the installer script
-powershell -ExecutionPolicy Bypass -File mcp-agentic-context/mcp-agentic-rules/install.ps1
+powershell -ExecutionPolicy Bypass -File mcp-agentic-rules/install.ps1
 ```
 
 ### Linux / Mac
 ```bash
-chmod +x mcp-agentic-context/mcp-agentic-rules/install.sh
-./mcp-agentic-context/mcp-agentic-rules/install.sh
+chmod +x mcp-agentic-rules/install.sh
+./mcp-agentic-rules/install.sh
 ```
 
 ## Post-Install Verification

@@ -268,8 +268,8 @@ Current bypass attempts logged in `.mcp/bypass_attempts.log`:
 - No manual intervention required
 
 ### Updating MCP System
-1. Update files in `mcp-agentic-context/`
-2. Re-run installer: `./mcp-agentic-context/mcp-agentic-rules/install.sh`
+1. Update files in the repository
+2. Re-run installer: `./mcp-agentic-rules/install.sh`
 3. Hooks automatically updated
 
 ### Monitoring

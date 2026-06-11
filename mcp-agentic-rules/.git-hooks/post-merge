@@ -10,4 +10,4 @@ else
     PYTHON_CMD="python"
 fi
 
-$PYTHON_CMD mcp-agentic-context/mcp-agentic-rules/mcp.py index-all --quick
+$PYTHON_CMD mcp-agentic-rules/mcp.py index-all --quick

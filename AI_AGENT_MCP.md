@@ -1,6 +1,6 @@
 # MCP Agentic Context - AI Agent Instructions
 
-## Available Commands (66 total)
+## Available Commands (76 total)
 
 Run with: `python mcp-agentic-rules/mcp.py <command>` (use `python`, not
 `python3` - on Windows python3 is often a broken Store stub). Exit codes:

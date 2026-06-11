@@ -11,4 +11,4 @@ else
     PYTHON_CMD="python"
 fi
 
-$PYTHON_CMD mcp-agentic-context/mcp-agentic-rules/mcp.py warm
+$PYTHON_CMD mcp-agentic-rules/mcp.py warm

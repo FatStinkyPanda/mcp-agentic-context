@@ -1,3 +1,0 @@
-#!/bin/bash
-# MCP Commit-msg Hook
-exit 0
