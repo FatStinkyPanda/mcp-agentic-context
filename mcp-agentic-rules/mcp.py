@@ -159,6 +159,8 @@ Analysis:
 Intelligence:
     context "query" [path]      Smart context extraction
     find "query" [path]         Natural language search
+    skeleton [path] [--budget N] Signature-only view of files/dirs
+    state [--set-goal/--add-task/--done N/--note] Project goals and tasks
     refactor [path]             Suggest refactorings
 
 Indexes:
@@ -239,6 +241,9 @@ COMMANDS = {
     # Semantic
     'index': 'vector_store',
     'search': 'vector_store',
+    'skeleton': 'skeleton',
+    'state': 'project_state',
+    'project-state': 'project_state',
     'pattern': 'astgrep',
     'parse': 'treesitter_utils',
     'embed': 'embeddings',
@@ -346,16 +351,32 @@ def main():
         return 1
 
 
+def _exit_for_closed_pipe():
+    """
+    Exit 0 when the reader closed the pipe early (piping into head etc.).
+    Point stdout at devnull first so the interpreter's final flush cannot
+    fail again and turn a non-error into exit code -1/255.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except Exception:
+        pass
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        rc = main()
+        # Flush inside the handler scope: on Windows a closed pipe surfaces
+        # here as OSError(EINVAL) rather than BrokenPipeError.
+        sys.stdout.flush()
+        sys.exit(rc)
     except KeyboardInterrupt:
         sys.exit(130)
     except BrokenPipeError:
-        # The reader closed the pipe early (e.g. piping into head); that is
-        # not a tool failure.
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass
-        sys.exit(0)
+        _exit_for_closed_pipe()
+    except OSError as e:
+        if e.errno in (22, 32):  # EINVAL / EPIPE: closed pipe on Windows
+            _exit_for_closed_pipe()
+        raise
