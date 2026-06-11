@@ -509,6 +509,21 @@ def main():
             Console.fail("No query provided")
             return 1
 
+        # Fast path: a running serve daemon answers with a warm model and
+        # index, skipping the per-invocation model load entirely.
+        try:
+            from .serve import request as serve_request
+            root = find_project_root() or Path.cwd()
+            resp = serve_request(root, {'op': 'search', 'query': query, 'k': 10})
+        except Exception:
+            resp = None
+        if resp and resp.get('ok'):
+            Console.ok("(answered by warm daemon)")
+            for i, r in enumerate(resp.get('results', []), 1):
+                print(f"\n[{i}] {r['path']}:{r['line']} (score: {r['score']:.3f})")
+                print(f"    {r['type']}: {r['name']}")
+            return 0
+
         # Load existing index
         if not store.load():
             Console.fail("No index found. Run 'index' first.")

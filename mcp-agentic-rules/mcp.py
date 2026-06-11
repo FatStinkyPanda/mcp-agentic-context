@@ -191,8 +191,9 @@ CI/CD:
 
 Automation:
     watch [path]                Live index updates
-    autocontext                 Auto-load context
+    autocontext [--budget N]    Auto-load context
     warm                        Pre-warm indexes
+    serve [--background/--status/--stop] Warm daemon: instant search/recall
 
 Setup & Diagnostics:
     setup --all                 Full setup
@@ -251,6 +252,7 @@ COMMANDS = {
     'watch': 'watcher',
     'autocontext': 'autocontext',
     'auto': 'autocontext',
+    'serve': 'serve',
     # Advanced indexes
     'index-all': 'index_all',
     'git-history': 'git_index',
