@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agentic-context": {
+      "command": "python",
+      "args": [
+        "mcp-agentic-rules/mcp.py",
+        "mcp-serve"
+      ]
+    }
+  }
+}

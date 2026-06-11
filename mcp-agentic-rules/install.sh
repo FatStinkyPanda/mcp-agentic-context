@@ -217,6 +217,12 @@ EOF
 
 ok "Created AI_AGENT_MCP.md"
 
+# Make the install discoverable to AI agents with zero manual wiring:
+# CLAUDE.md section (Claude Code), AGENTS.md section (Cursor/Codex/etc.),
+# and .mcp.json registration of the native MCP server.
+"$PYTHON_CMD" "$MCP_TARGET/mcp.py" integrate
+ok "Agent discovery wired (CLAUDE.md, AGENTS.md, .mcp.json)"
+
 # ============================================================================
 # STEP 6: Install Project Pack
 # ============================================================================

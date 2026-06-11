@@ -81,7 +81,7 @@ def ensure_venv_execution():
         return
 
     # Check if we should bypass auto-venv for setup commands
-    bypass_cmds = ('setup', 'doctor', 'verify', 'gui', 'pack')
+    bypass_cmds = ('setup', 'doctor', 'verify', 'gui', 'pack', 'integrate')
     if len(sys.argv) > 1 and sys.argv[1] in bypass_cmds:
         return
 
@@ -199,6 +199,7 @@ Automation:
 Setup & Diagnostics:
     setup --all                 Full setup
     setup --hooks               Install git hooks
+    integrate                   Wire agent discovery (CLAUDE.md/AGENTS.md/.mcp.json)
     doctor                      Run system health diagnostics (self-repair)
     gui                         Launch interactive local web GUI dashboard
     record action "..."         Record an action to MCP log
@@ -278,6 +279,7 @@ COMMANDS = {
     'test-gen': 'test_gen',
     # Setup & Automation
     'setup': 'setup',
+    'integrate': 'integrate',
     'warm': 'warm',
     'auto-learn': 'auto_learn',
     # Project Packs
