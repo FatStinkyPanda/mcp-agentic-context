@@ -2,26 +2,46 @@
 
 > **AI Agent Enhancement & Unlimited Context Package** - 72 Scripts | 76 Commands | 6 Git Hooks | Offline-First Core
 
+[![CI](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml/badge.svg)](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/FatStinkyPanda/mcp-agentic-context)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
+
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
+
+**New in [v2.0.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/tag/v2.0.0):**
+multi-language semantic search (TypeScript/JS and 25+ languages), incremental auto-fresh indexing
+(0.3s no-change re-index on a 32,000-file monorepo), a warm daemon answering searches in ~0.4s,
+a native Model Context Protocol server for Claude Code/Cursor/Codex, self-advertising installs,
+project-scoped memory, and CI-verified quality on Linux and Windows. Full details in the
+[CHANGELOG](CHANGELOG.md).
 
 MCP Agentic Context is a drop-in AI agent enhancement system that installs into any project and gives every AI agent working on it a shared set of tools, memory, code analysis, security scanning, autonomous development workflows, and enforced quality gates. 
 
 Equipped with **Dynamic Context Budgeting & Linguistic Zoom**, **Two-Tier Macro Codebase Dependency Graphs**, a **Preemptive Self-Healing Background Daemon**, and a **Vectorized Activity Ledger**, it is designed to grant AI agents virtually unlimited context capability and preemptive developer safeguards. It works completely offline and requires only Python 3.8+.
 
-Originally built to accelerate ML research and experimentation workflows, MCP Global has grown into a powerful, general-purpose tool that works equally well for any kind of software project.
+MCP Agentic Context began as a layer on top of [OpenMemory](https://github.com/CaviraOSS/OpenMemory)
+by [CaviraOSS](https://github.com/CaviraOSS), whose local persistent memory store for LLM
+applications provided the original foundation. It has expanded so far beyond that starting point -
+semantic code search across 25+ languages, incremental indexing engines, code analysis and quality
+gates, a warm serving daemon, a native MCP server, and autonomous development workflows - that the
+codebase is practically unrecognizable from the original fork. Credit and thanks to CaviraOSS for
+the foundation that started it.
+
+Originally built to accelerate ML research and experimentation workflows, it has grown into a powerful, general-purpose tool that works equally well for any kind of software project.
 
 ---
 
 ## What Is This?
 
-When an AI agent (Claude, Gemini, GPT-4, local LLM, etc.) works on a project with MCP Global installed, it gains access to:
+When an AI agent (Claude, Gemini, GPT-4, local LLM, etc.) works on a project with MCP Agentic Context installed, it gains access to:
 
-- **Persistent memory** across sessions — agents remember decisions, file locations, and learned patterns
-- **Semantic code search** — find related code by meaning, not just keyword
-- **Automated code review** — quality checks enforced at commit time via git hooks
-- **Security auditing** — scan for secrets, vulnerabilities, and injection risks before every push
-- **Bug prediction** — AI-powered analysis to catch issues before they ship
-- **Multi-agent coordination** — agents on different machines collaborate via `mcp comms`
+- **Persistent memory** across sessions - agents remember decisions, file locations, and learned patterns
+- **Semantic code search** - find related code by meaning, not just keyword
+- **Automated code review** - quality checks enforced at commit time via git hooks
+- **Security auditing** - scan for secrets, vulnerabilities, and injection risks before every push
+- **Bug prediction** - AI-powered analysis to catch issues before they ship
+- **Multi-agent coordination** - agents on different machines collaborate via `mcp comms`
 - **Offline-first core** - every core tool is stdlib-only and runs with no internet; optional accelerators (sentence-transformers, faiss-cpu, tree-sitter grammars, numpy, watchdog) install from PyPI and are cached for offline use afterwards
 
 ---
@@ -138,7 +158,7 @@ visible everywhere. Legacy memories created before scoping stay global.
 
 | Command | Description |
 |---------|-------------|
-| `security [path]` | Security audit — secrets, injection, CVEs |
+| `security [path]` | Security audit - secrets, injection, CVEs |
 | `profile [path]` | Complexity and performance analysis |
 | `architecture [path]` | Validate project structure |
 | `deps [path]` | Dependency graph and risk analysis |
@@ -225,7 +245,7 @@ visible everywhere. Legacy memories created before scoping stay global.
 
 Two special trigger words activate predefined autonomous workflows:
 
-### `dev` — Autonomous Development Mode
+### `dev` - Autonomous Development Mode
 
 When you say **"dev"** to your AI agent, it will:
 
@@ -233,16 +253,16 @@ When you say **"dev"** to your AI agent, it will:
 2. Read `README.md` as the single source of truth
 3. Run `autocontext` and `recall "project"`
 4. Identify the next priority task via `todos`
-5. **Implement autonomously** — no human input required
+5. **Implement autonomously** - no human input required
 6. Commit progress incrementally, following quality gates
 
-### `go` — Context + Suggestions Mode
+### `go` - Context + Suggestions Mode
 
 When you say **"go"** to your AI agent, it will:
 
 1. Load context and read `README.md`
 2. Identify tasks and gaps via `todos`
-3. **Stop and present findings** — does NOT make changes
+3. **Stop and present findings** - does NOT make changes
 4. List suggested next steps with priority and complexity estimates
 5. Wait for your explicit direction
 
@@ -256,10 +276,10 @@ Git hooks automatically block operations that fail quality standards:
 |------|---------|-----------|
 | `pre-commit` | Every commit | CRITICAL security issues, code review errors |
 | `pre-push` | Every push | Doc coverage < 50%, architecture violations |
-| `commit-msg` | Every commit | N/A — enriches context only |
-| `post-commit` | Every commit | N/A — updates learning and indexes |
-| `post-checkout` | Branch switch | N/A — warms context |
-| `post-merge` | After merge | N/A — re-indexes |
+| `commit-msg` | Every commit | N/A - enriches context only |
+| `post-commit` | Every commit | N/A - updates learning and indexes |
+| `post-checkout` | Branch switch | N/A - warms context |
+| `post-merge` | After merge | N/A - re-indexes |
 
 ---
 
@@ -339,9 +359,9 @@ python mcp-agentic-rules/mcp.py comms collaborate
 
 Agents MUST use models in this order:
 
-1. **Gemini Flash** — Primary, default for all tasks
-2. **Claude Opus** — Secondary, for complex reasoning
-3. **Local LLM** — Fallback, zero-dependency operation
+1. **Gemini Flash** - Primary, default for all tasks
+2. **Claude Opus** - Secondary, for complex reasoning
+3. **Local LLM** - Fallback, zero-dependency operation
 
 Use `python mcp-agentic-rules/mcp.py model status` to verify and `model switch` to change.
 
@@ -368,11 +388,11 @@ python mcp-agentic-rules/mcp.py nsync run my_project/main.py
 
 ### Core Scripts (No Installation Required)
 
-All 53 Python scripts use **stdlib only** — Python 3.8+ standard library. Zero external dependencies for core functionality.
+All 53 Python scripts use **stdlib only** - Python 3.8+ standard library. Zero external dependencies for core functionality.
 
 ### Bundled Vendor Wheels (Offline-First)
 
-Located in `vendor/python-packages-py311/` — install without internet access:
+Located in `vendor/python-packages-py311/` - install without internet access:
 
 ```bash
 pip install --no-index --find-links=vendor/python-packages-py311 pylint flake8 black mypy bandit pytest
@@ -455,27 +475,27 @@ mcp-agentic-rules/
 
 These principles are enforced by the system and must be followed by all agents:
 
-1. **Fix Properly, Never Disable** — Always fix issues completely. Never restrict, disable, or reduce capabilities. All integrations must build on what already exists.
+1. **Fix Properly, Never Disable** - Always fix issues completely. Never restrict, disable, or reduce capabilities. All integrations must build on what already exists.
 
-2. **README as Single Source of Truth** — `README.md` defines project goals and roadmap. All agent decisions must align with it.
+2. **README as Single Source of Truth** - `README.md` defines project goals and roadmap. All agent decisions must align with it.
 
-3. **No Emojis in Code** — Emojis in source code cause encoding errors across devices and platforms. Prohibited unless explicitly requested.
+3. **No Emojis in Code** - Emojis in source code cause encoding errors across devices and platforms. Prohibited unless explicitly requested.
 
-4. **Autonomous Collaboration** — Agents must coordinate via `mcp comms` to avoid conflicts. Zero human intervention is the goal.
+4. **Autonomous Collaboration** - Agents must coordinate via `mcp comms` to avoid conflicts. Zero human intervention is the goal.
 
-5. **Model Priority Enforcement** — Gemini Flash first, Claude Opus second, local LLM as fallback. Switch automatically on rate limits.
+5. **Model Priority Enforcement** - Gemini Flash first, Claude Opus second, local LLM as fallback. Switch automatically on rate limits.
 
 ---
 
 ## About the Author
 
-MCP Global was created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**, a machine learning engineer specializing in:
+MCP Agentic Context was created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**, a machine learning engineer specializing in:
 
 - Designing and training research AI models using **PyTorch** and (occasionally) **TensorFlow**
-- Building entire **AI model architectures from scratch** — transformers, custom attention mechanisms, novel training paradigms
+- Building entire **AI model architectures from scratch** - transformers, custom attention mechanisms, novel training paradigms
 - End-to-end ML research pipelines, from dataset curation through training, evaluation, and deployment
 
-This project was born out of a need to move faster across many parallel research experiments. Managing code quality, context, memory, and agent coordination by hand across dozens of experimental branches was a constant bottleneck. MCP Global was built to eliminate that overhead entirely.
+This project was born out of a need to move faster across many parallel research experiments. Managing code quality, context, memory, and agent coordination by hand across dozens of experimental branches was a constant bottleneck. MCP Agentic Context was built to eliminate that overhead entirely - starting from the foundation laid by [CaviraOSS's OpenMemory](https://github.com/CaviraOSS/OpenMemory) and growing into the system it is today.
 
 While it was designed with ML research workflows in mind, the system is completely general-purpose and has proven equally effective for web development, systems programming, data engineering, and any other project where AI agents are part of the development process.
 
@@ -485,7 +505,7 @@ While it was designed with ML research workflows in mind, the system is complete
 
 ## License
 
-MIT
+[Creative Commons Attribution 4.0 International (CC BY 4.0)](LICENSE)
 
 ---
 
