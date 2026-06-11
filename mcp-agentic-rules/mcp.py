@@ -303,6 +303,11 @@ def main():
 
     module_name = COMMANDS[command]
 
+    # Expose the invoked command name so multi-verb modules (several commands
+    # mapping to one module, e.g. index/search -> vector_store) can tell which
+    # verb was requested. sys.argv only carries the verb's arguments.
+    os.environ['MCP_COMMAND'] = command
+
     try:
         # Import the module
         module = importlib.import_module(f'scripts.{module_name}')

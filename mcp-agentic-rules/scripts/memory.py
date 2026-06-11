@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+import os
 import sys
 import sqlite3
 
@@ -471,7 +472,10 @@ def main():
     if len(args) == 1:
         query = args[0]
 
-        if '--forget' in sys.argv or '--delete' in sys.argv:
+        # mcp.py strips the verb from argv and exposes it via MCP_COMMAND, so
+        # "mcp.py forget <key>" must delete rather than fall through to recall.
+        invoked = os.environ.get('MCP_COMMAND', '')
+        if invoked == 'forget' or '--forget' in sys.argv or '--delete' in sys.argv:
             if store.forget(query):
                 Console.ok(f"Forgot: {query}")
             else:

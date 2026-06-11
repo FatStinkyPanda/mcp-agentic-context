@@ -437,23 +437,32 @@ def main():
 
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
 
-    if len(args) < 1:
+    # When dispatched through mcp.py the verb (index/search) is stripped from
+    # argv and exposed via MCP_COMMAND instead; direct script invocation still
+    # passes the verb as the first positional argument.
+    known_commands = ('index', 'search')
+    invoked = os.environ.get('MCP_COMMAND', '')
+    if args and args[0] in known_commands:
+        command = args[0]
+        args = args[1:]
+    elif invoked in known_commands:
+        command = invoked
+    else:
         Console.info("Usage: python vector_store.py <command> [args]")
         Console.info("Commands:")
         Console.info("  index <path>     Index codebase")
         Console.info("  search <query>   Search index")
         return 1
 
-    command = args[0]
     store = VectorStore()
 
     if command == 'index':
         root = find_project_root() or Path.cwd()
-        path = Path(args[1]) if len(args) > 1 else root
+        path = Path(args[0]) if args else root
         store.index_codebase(path)
 
     elif command == 'search':
-        query = ' '.join(args[1:]) if len(args) > 1 else ''
+        query = ' '.join(args)
         if not query:
             Console.fail("No query provided")
             return 1
