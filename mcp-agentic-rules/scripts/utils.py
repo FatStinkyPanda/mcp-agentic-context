@@ -75,6 +75,160 @@ class GitCommit:
 # FILE DISCOVERY
 # =============================================================================
 
+# Directories that are never worth indexing. These are pruned DURING the walk
+# (os.walk + in-place dirnames edit), so the walker never descends into them.
+# This is what makes discovery scale on large JS/TS monorepos, where
+# node_modules alone can hold hundreds of thousands of files.
+DEFAULT_EXCLUDE_DIRS = frozenset({
+    # VCS
+    '.git', '.hg', '.svn',
+    # Python caches / envs
+    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+    '.venv', 'venv', 'env', 'virtualenv', '.eggs',
+    # JS/TS package + tool caches
+    'node_modules', 'bower_components', '.pnpm-store', '.yarn',
+    # Build / output
+    'dist', 'build', 'out', '.output',
+    '.next', '.nuxt', '.svelte-kit', '.astro', '.turbo', '.parcel-cache',
+    # Misc tool dirs
+    '.cache', '.gradle', '.idea', '.vscode', '.terraform',
+    'target', 'vendor', 'coverage', '.nyc_output', 'site-packages',
+    # This tool's own data
+    '.mcp',
+})
+
+# Source-code extensions worth indexing for code intelligence. Configs and
+# docs (.json/.yaml/.md) are intentionally excluded here; they are handled by
+# the dedicated config/doc indexes.
+SOURCE_EXTENSIONS = frozenset({
+    # Python
+    '.py', '.pyi',
+    # JS/TS ecosystem
+    '.js', '.jsx', '.mjs', '.cjs',
+    '.ts', '.tsx', '.mts', '.cts',
+    '.vue', '.svelte', '.astro',
+    # JVM
+    '.java', '.kt', '.kts', '.scala', '.groovy',
+    # Systems
+    '.go', '.rs', '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.hh',
+    '.cs', '.swift', '.m', '.mm',
+    # Scripting / other
+    '.rb', '.php', '.lua', '.sh', '.bash', '.zsh',
+    '.sql', '.graphql', '.gql',
+})
+
+# Default ceiling on a single file's size. Skips minified bundles, generated
+# blobs, and vendored data that would pollute the index and slow embedding.
+DEFAULT_MAX_FILE_BYTES = 1_500_000
+
+
+def _is_minified_or_generated(name: str) -> bool:
+    """Heuristically skip minified/generated artifacts that match a source ext."""
+    low = name.lower()
+    return (
+        low.endswith('.min.js') or low.endswith('.min.css')
+        or low.endswith('.bundle.js') or low.endswith('.map')
+    )
+
+
+def _load_gitignore_dirs(root: Path) -> set:
+    """
+    Best-effort: read the root .gitignore and return unambiguous directory
+    ignores to augment DEFAULT_EXCLUDE_DIRS.
+
+    Only single-segment, wildcard-free, non-negated patterns are honoured (a
+    bare name or a name with a trailing slash). This safely picks up
+    repo-specific build/output folders (e.g. 'generated/', 'storybook-static/')
+    without the risk of an over-broad glob excluding real source.
+    """
+    extra: set = set()
+    gitignore = root / '.gitignore'
+    try:
+        lines = gitignore.read_text(encoding='utf-8', errors='ignore').splitlines()
+    except Exception:
+        return extra
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith('#') or line.startswith('!'):
+            continue
+        name = line.rstrip('/')
+        if name.startswith('/'):
+            name = name[1:]
+        if not name or '/' in name or any(c in name for c in '*?[]'):
+            continue
+        extra.add(name)
+    return extra
+
+
+def find_source_files(
+    root: Path,
+    extensions: Optional[set] = None,
+    exclude_dirs: Optional[set] = None,
+    respect_gitignore: bool = True,
+    max_file_bytes: Optional[int] = DEFAULT_MAX_FILE_BYTES,
+    max_files: Optional[int] = None,
+    follow_symlinks: bool = False,
+) -> Iterator[Path]:
+    """
+    Yield source files under *root*, scalably and language-agnostically.
+
+    Unlike a naive ``rglob``, this prunes ignored directories DURING the walk,
+    so it never descends into node_modules/.git/dist/.next/... - essential for
+    large monorepos.
+
+    Args:
+        root: Directory to search.
+        extensions: Set of lowercase suffixes to include (default SOURCE_EXTENSIONS).
+        exclude_dirs: Extra directory names to prune (added to the defaults).
+        respect_gitignore: Honour simple directory ignores from root .gitignore.
+        max_file_bytes: Skip files larger than this (None disables the cap).
+        max_files: Stop after yielding this many files (None disables the cap).
+        follow_symlinks: Whether os.walk should follow directory symlinks.
+
+    Yields:
+        Path objects for each matching source file.
+    """
+    root = Path(root)
+    if not root.exists():
+        return
+
+    exts = {e.lower() for e in (extensions if extensions is not None else SOURCE_EXTENSIONS)}
+
+    excluded = set(DEFAULT_EXCLUDE_DIRS)
+    if exclude_dirs:
+        excluded.update(exclude_dirs)
+    if respect_gitignore:
+        excluded.update(_load_gitignore_dirs(root))
+
+    yielded = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
+        # Prune ignored directories in place so os.walk will not descend.
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in excluded and not d.endswith('.egg-info')
+        ]
+
+        for fname in filenames:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in exts:
+                continue
+            if _is_minified_or_generated(fname):
+                continue
+
+            fpath = Path(dirpath) / fname
+            if max_file_bytes is not None:
+                try:
+                    if fpath.stat().st_size > max_file_bytes:
+                        continue
+                except OSError:
+                    continue
+
+            yield fpath
+            yielded += 1
+            if max_files is not None and yielded >= max_files:
+                return
+
+
 def find_python_files(
     root: Path,
     exclude_patterns: List[str] = None
@@ -82,40 +236,27 @@ def find_python_files(
     """
     Find all Python files in a directory tree.
 
+    Backwards-compatible thin wrapper over find_source_files. Any plain
+    directory names in *exclude_patterns* are honoured as extra pruned dirs;
+    glob-style patterns (legacy '*.egg-info') are ignored here since the
+    underlying walker already prunes '*.egg-info' and the default set.
+
     Args:
         root: Root directory to search
-        exclude_patterns: Patterns to exclude (e.g., ['__pycache__', '.venv'])
+        exclude_patterns: Directory names to exclude (legacy compatibility)
 
     Yields:
         Path objects for each Python file found
     """
-    if exclude_patterns is None:
-        exclude_patterns = [
-            '__pycache__', '.venv', 'venv', '.git', 'node_modules',
-            '.eggs', '*.egg-info', 'dist', 'build', '.tox', '.pytest_cache'
-        ]
+    extra_dirs = None
+    if exclude_patterns:
+        extra_dirs = {p for p in exclude_patterns if not p.startswith('*')}
 
-    root = Path(root)
-    if not root.exists():
-        return
-
-    for item in root.rglob('*.py'):
-        # Check if any parent directory matches exclude patterns
-        skip = False
-        for part in item.parts:
-            for pattern in exclude_patterns:
-                if pattern.startswith('*'):
-                    if part.endswith(pattern[1:]):
-                        skip = True
-                        break
-                elif part == pattern:
-                    skip = True
-                    break
-            if skip:
-                break
-
-        if not skip:
-            yield item
+    yield from find_source_files(
+        root,
+        extensions={'.py', '.pyi'},
+        exclude_dirs=extra_dirs,
+    )
 
 
 def find_project_root(start: Path = None) -> Optional[Path]:
