@@ -30,9 +30,13 @@ SERVER_INFO = {"name": "mcp-agentic-context", "version": "2.0.0"}
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "semantic_search",
-        "description": "Semantic code search over the indexed project. "
-                       "Returns the most relevant functions/classes with "
-                       "file paths and line numbers.",
+        "description": "Use this BEFORE reading files whenever you need to "
+                       "locate code by purpose or meaning ('where is auth "
+                       "handled', 'function that formats prices'). Costs a "
+                       "few hundred tokens versus thousands for reading "
+                       "files. Returns the most relevant functions/classes "
+                       "with file paths and line numbers; results are "
+                       "auto-refreshed after file edits.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -44,8 +48,10 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "recall_memory",
-        "description": "Search persistent agent memory (current project plus "
-                       "global memories).",
+        "description": "Use this AT SESSION START and before re-deriving any "
+                       "decision: persistent agent memory survives context "
+                       "compaction and session restarts. Searches the current "
+                       "project's memories plus globals.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -58,7 +64,10 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "remember",
-        "description": "Store a persistent memory for this project.",
+        "description": "Use this IMMEDIATELY when you learn something worth "
+                       "keeping (API quirks, conventions, decisions, gotchas) "
+                       "- do not wait until the end of the session. Stored "
+                       "memories outlive context compaction and restarts.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -72,8 +81,11 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "autocontext",
-        "description": "Load layered project context (map, memories, active "
-                       "files, semantic matches) within a budget.",
+        "description": "Use this ONCE at the start of a task to orient: loads "
+                       "a layered project picture (map, memories, active "
+                       "files, semantic matches) hard-capped to the budget. "
+                       "Prefer semantic_search for follow-up lookups instead "
+                       "of calling this repeatedly.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -84,8 +96,10 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "skeleton",
-        "description": "Signature-only compressed view of a file or directory "
-                       "(works for TypeScript/JavaScript/Python and more).",
+        "description": "Use this INSTEAD OF reading a whole file or directory "
+                       "when you only need its shape: returns signatures, "
+                       "classes, and imports without bodies, at a fraction of "
+                       "the tokens (TypeScript/JavaScript/Python and more).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -97,7 +111,10 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "project_state",
-        "description": "Read or update the shared project state: goal, tasks, notes.",
+        "description": "Use this at session start to see the shared goal/"
+                       "tasks/notes, and whenever you finish or plan an "
+                       "increment (add_task/done/note). State is shared "
+                       "across every agent session on this project.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -129,6 +146,12 @@ class MCPServer:
 
     def tool_semantic_search(self, args: dict) -> str:
         store = self._vector_store()
+        # Auto-fresh: reconcile the index before answering so edits made
+        # moments ago are searchable. No-op when nothing changed.
+        try:
+            store.refresh(self.root)
+        except Exception:
+            pass
         if not store.chunks:
             return "No vector index found. Run 'python mcp.py index-all' first."
         results = store.search(str(args.get("query", "")), k=int(args.get("k", 10)))
