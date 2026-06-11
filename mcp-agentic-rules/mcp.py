@@ -124,6 +124,15 @@ if str(MCP_ROOT) not in sys.path:
 # Store for other modules to use
 os.environ['MCP_ROOT'] = str(MCP_ROOT)
 
+# Make console output resilient on Windows legacy codepages: indexed source
+# files may contain characters the active console codepage cannot encode, and
+# a print() must never crash a command over a lone glyph.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
 
 def show_help():
     """Show help message."""
@@ -316,7 +325,11 @@ def main():
         sys.argv = [f'scripts/{module_name}.py'] + args
 
         if hasattr(module, 'main'):
-            return module.main() or 0
+            # Exit-code contract: 0 = success, 1 = failure. Normalize whatever
+            # a module returns (None, bools, negative ints that would wrap to
+            # 255 on Windows) onto that contract.
+            rc = module.main()
+            return 0 if rc is None or rc == 0 else 1
         else:
             print(f"[FAIL] Module {module_name} has no main function")
             return 1
@@ -334,4 +347,15 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        # The reader closed the pipe early (e.g. piping into head); that is
+        # not a tool failure.
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        sys.exit(0)
