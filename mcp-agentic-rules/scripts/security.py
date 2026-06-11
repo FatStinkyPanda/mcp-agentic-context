@@ -366,7 +366,42 @@ def security_audit(
         else:
             report.issues.extend([i for i in issues if i.severity != Severity.INFO])
 
+    # On JS/TS projects, also surface dependency vulnerabilities via the
+    # project's own package manager audit.
+    report.issues.extend(js_dependency_issues(root))
+
     return report
+
+
+def js_dependency_issues(root: Path) -> List[SecurityIssue]:
+    """Run pnpm audit on pnpm projects and convert advisories."""
+    issues: List[SecurityIssue] = []
+    try:
+        from .js_toolchain import detect_js_project, run_pnpm_audit
+    except ImportError:
+        return issues
+
+    info = detect_js_project(root)
+    if not info.get("js_project") or not info.get("pnpm"):
+        return issues
+
+    Console.info("Running pnpm audit for dependency vulnerabilities...")
+    severity_map = {
+        "critical": Severity.CRITICAL,
+        "high": Severity.HIGH,
+        "moderate": Severity.MEDIUM,
+        "low": Severity.LOW,
+    }
+    for adv in run_pnpm_audit(root):
+        issues.append(SecurityIssue(
+            path=Path(root) / "package.json",
+            line=0,
+            severity=severity_map.get(adv.get("severity", ""), Severity.INFO),
+            category="dependency",
+            title=f"{adv.get('module', 'dependency')}: {adv.get('title', 'advisory')}",
+            description=adv.get("url", ""),
+        ))
+    return issues
 
 
 def main():

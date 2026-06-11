@@ -401,7 +401,49 @@ def review_project(
         issues = review_file(path, strict=strict)
         report.issues.extend(issues)
 
+    # On JS/TS projects, the repo's own toolchain is the authority: merge
+    # eslint and tsc findings so 'review' is meaningful beyond Python.
+    if not staged_only:
+        report.issues.extend(js_toolchain_issues(root))
+
     return report
+
+
+def js_toolchain_issues(root: Path) -> List[ReviewIssue]:
+    """Run the project's eslint/tsc (when declared) and convert findings."""
+    issues: List[ReviewIssue] = []
+    try:
+        from .js_toolchain import detect_js_project, run_eslint, run_tsc
+    except ImportError:
+        return issues
+
+    info = detect_js_project(root)
+    if not info.get("js_project"):
+        return issues
+
+    if info.get("eslint"):
+        Console.info("Running project eslint...")
+        for f in run_eslint(root):
+            issues.append(ReviewIssue(
+                file=Path(f["file"]),
+                line=f["line"],
+                severity=Severity.ERROR if f["severity"] == "error" else Severity.WARNING,
+                category=f"eslint:{f['rule']}",
+                message=f["message"],
+            ))
+
+    if info.get("typescript"):
+        Console.info("Running project tsc --noEmit...")
+        for f in run_tsc(root):
+            issues.append(ReviewIssue(
+                file=Path(f["file"]),
+                line=f["line"],
+                severity=Severity.ERROR if f["severity"] == "error" else Severity.WARNING,
+                category=f"tsc:{f['rule']}",
+                message=f["message"],
+            ))
+
+    return issues
 
 
 def format_report_console(report: ReviewReport) -> None:
