@@ -19,12 +19,11 @@ from dataclasses import dataclass
 from .utils import Console
 
 
-# Try to import sentence-transformers
-try:
-    from sentence_transformers import SentenceTransformer
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+# sentence-transformers (which pulls torch) costs many seconds just to
+# IMPORT, so it is resolved lazily inside get_model(). Commands that never
+# need the model - and clients whose query is answered by the warm serve
+# daemon - must not pay that import tax.
+TRANSFORMERS_AVAILABLE: Optional[bool] = None  # unknown until first use
 
 # Try to import numpy
 try:
@@ -39,17 +38,30 @@ _model = None
 _model_name = "all-MiniLM-L6-v2"  # 22MB, good quality/speed balance
 
 
+def _transformers_available() -> bool:
+    """Resolve (and cache) whether sentence-transformers is importable."""
+    global TRANSFORMERS_AVAILABLE
+    if TRANSFORMERS_AVAILABLE is None:
+        try:
+            import sentence_transformers  # noqa: F401
+            TRANSFORMERS_AVAILABLE = True
+        except ImportError:
+            TRANSFORMERS_AVAILABLE = False
+    return TRANSFORMERS_AVAILABLE
+
+
 def get_model():
-    """Get or load embedding model."""
+    """Get or load embedding model (lazy heavy import)."""
     global _model
 
     if _model is not None:
         return _model
 
-    if not TRANSFORMERS_AVAILABLE:
+    if not _transformers_available():
         return None
 
     try:
+        from sentence_transformers import SentenceTransformer
         # Try to load from local cache first
         _model = SentenceTransformer(_model_name)
         return _model
@@ -201,8 +213,8 @@ def embedding_dimension() -> int:
 
 
 def is_transformers_available() -> bool:
-    """Check if sentence-transformers is available."""
-    return TRANSFORMERS_AVAILABLE
+    """Check if sentence-transformers is available (resolves lazily)."""
+    return _transformers_available()
 
 
 @dataclass
@@ -229,7 +241,7 @@ def main():
     """CLI entry point."""
     Console.header("Embedding Generation")
 
-    if TRANSFORMERS_AVAILABLE:
+    if _transformers_available():
         Console.ok("sentence-transformers available")
         model = get_model()
         if model:
