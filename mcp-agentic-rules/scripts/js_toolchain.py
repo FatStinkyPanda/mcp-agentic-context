@@ -159,9 +159,12 @@ def _run(cmd: List[str], root: Path, timeout: int) -> Optional[str]:
         return None
 
 
-def run_eslint(root: Path, timeout: int = DEFAULT_TIMEOUT) -> List[dict]:
-    """Run the project's eslint over the repo; [] when unavailable."""
-    out = _run(runner_prefix(root) + ["eslint", ".", "--format", "json"],
+def run_eslint(root: Path, timeout: int = DEFAULT_TIMEOUT,
+               target: Optional[Path] = None) -> List[dict]:
+    """Run the project's eslint over the repo (or one file); [] when
+    unavailable."""
+    eslint_target = str(target) if target else "."
+    out = _run(runner_prefix(root) + ["eslint", eslint_target, "--format", "json"],
                root, timeout)
     return parse_eslint_json(out) if out else []
 

@@ -350,10 +350,18 @@ def security_audit(
 ) -> SecurityReport:
     """Perform security audit on a project."""
     report = SecurityReport()
+    root = Path(root)
 
     Console.info(f"Security audit of {root}...")
 
-    files = list(find_python_files(root, exclude_patterns))
+    if root.is_file():
+        # Single-file audit: previously this silently scanned 0 files.
+        files = [root] if root.suffix.lower() in ('.py', '.pyi') else []
+        if not files:
+            Console.warn(f"No Python audit rules for {root.name}; "
+                         "dependency audit still runs at project level")
+    else:
+        files = list(find_python_files(root, exclude_patterns))
     report.files_scanned = len(files)
     Console.info(f"Scanning {len(files)} files...")
 

@@ -385,11 +385,20 @@ def review_project(
         ReviewReport
     """
     report = ReviewReport()
+    root = Path(root)
 
     if staged_only:
         Console.info("Reviewing staged files only...")
         staged = get_staged_files(cwd=root)
         files = [root / f for f in staged if f.endswith('.py')]
+    elif root.is_file():
+        # Single-file review: previously this silently reviewed 0 files and
+        # reported PASSED, which is worse than an error.
+        Console.info(f"Reviewing single file: {root}")
+        files = [root] if root.suffix.lower() in ('.py', '.pyi') else []
+        if not files and root.suffix.lower() not in JS_EXTS:
+            Console.warn(f"Nothing reviewable at {root.name}: not a Python "
+                         "or JS/TS source file")
     else:
         Console.info(f"Reviewing all Python files in {root}...")
         files = list(find_python_files(root, exclude_patterns))
@@ -404,18 +413,43 @@ def review_project(
     # On JS/TS projects, the repo's own toolchain is the authority: merge
     # eslint and tsc findings so 'review' is meaningful beyond Python.
     if not staged_only:
-        report.issues.extend(js_toolchain_issues(root))
+        js_issues = js_toolchain_issues(root)
+        report.issues.extend(js_issues)
+        if root.is_file() and root.suffix.lower() in JS_EXTS:
+            report.files_reviewed += 1
 
     return report
 
 
+JS_EXTS = ('.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs')
+
+
 def js_toolchain_issues(root: Path) -> List[ReviewIssue]:
-    """Run the project's eslint/tsc (when declared) and convert findings."""
+    """
+    Run the project's eslint/tsc (when declared) and convert findings.
+
+    Accepts a directory or a single JS/TS file; for a file, the owning
+    project is resolved by walking up to the nearest package.json and
+    eslint targets just that file (tsc is project-wide only).
+    """
     issues: List[ReviewIssue] = []
     try:
         from .js_toolchain import detect_js_project, run_eslint, run_tsc
     except ImportError:
         return issues
+
+    root = Path(root)
+    target_file = None
+    if root.is_file():
+        if root.suffix.lower() not in JS_EXTS:
+            return issues
+        target_file = root
+        for parent in root.resolve().parents:
+            if (parent / "package.json").exists():
+                root = parent
+                break
+        else:
+            return issues
 
     info = detect_js_project(root)
     if not info.get("js_project"):
@@ -423,7 +457,7 @@ def js_toolchain_issues(root: Path) -> List[ReviewIssue]:
 
     if info.get("eslint"):
         Console.info("Running project eslint...")
-        for f in run_eslint(root):
+        for f in run_eslint(root, target=target_file):
             issues.append(ReviewIssue(
                 file=Path(f["file"]),
                 line=f["line"],
@@ -432,7 +466,7 @@ def js_toolchain_issues(root: Path) -> List[ReviewIssue]:
                 message=f["message"],
             ))
 
-    if info.get("typescript"):
+    if info.get("typescript") and target_file is None:
         Console.info("Running project tsc --noEmit...")
         for f in run_tsc(root):
             issues.append(ReviewIssue(

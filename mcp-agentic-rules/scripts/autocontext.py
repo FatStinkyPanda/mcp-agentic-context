@@ -453,7 +453,10 @@ def get_auto_context(
 
         mem_tokens_used = 0
         for mem in recent_mems[:5]:
-            encoded = f"[{mem.key}] {mem.value}"
+            # Cap verbose memories (e.g. legacy auto-snapshots) so one noisy
+            # value cannot consume the whole memory budget.
+            value = mem.value if len(mem.value) <= 400 else mem.value[:400] + " [...]"
+            encoded = f"[{mem.key}] {value}"
             if mem_tokens_used + len(encoded.split()) < budget_activity // 2:
                 memories.append(encoded)
                 mem_tokens_used += len(encoded.split())
@@ -547,14 +550,32 @@ def get_auto_context(
     if budgeted_active_files:
         final_output.append("# Active Context")
         for path, formatted, _ in budgeted_active_files:
-            final_output.append(f"## {Path(path).name}\n# {path}\n```python\n{formatted}\n```\n")
+            lang = _fence_lang(path)
+            final_output.append(f"## {Path(path).name}\n# {path}\n```{lang}\n{formatted}\n```\n")
 
     if budgeted_semantic_files:
         final_output.append("# Semantic Context")
         for path, formatted, _ in budgeted_semantic_files:
-            final_output.append(f"## {Path(path).name} (Relevant)\n# {path}\n```python\n{formatted}\n```\n")
+            lang = _fence_lang(path)
+            final_output.append(f"## {Path(path).name} (Relevant)\n# {path}\n```{lang}\n{formatted}\n```\n")
 
     return _enforce_hard_cap("\n".join(final_output), token_budget)
+
+
+FENCE_LANGS = {
+    '.py': 'python', '.pyi': 'python',
+    '.ts': 'typescript', '.tsx': 'tsx', '.mts': 'typescript', '.cts': 'typescript',
+    '.js': 'javascript', '.jsx': 'jsx', '.mjs': 'javascript', '.cjs': 'javascript',
+    '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown',
+    '.css': 'css', '.scss': 'scss', '.html': 'html', '.vue': 'vue',
+    '.go': 'go', '.rs': 'rust', '.java': 'java', '.rb': 'ruby',
+    '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql',
+}
+
+
+def _fence_lang(path) -> str:
+    """Code-fence language for a file path (was hardcoded to python)."""
+    return FENCE_LANGS.get(Path(path).suffix.lower(), 'text')
 
 
 def _enforce_hard_cap(text: str, token_budget: int) -> str:
