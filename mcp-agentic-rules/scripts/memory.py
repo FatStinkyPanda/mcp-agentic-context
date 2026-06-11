@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+import hashlib
 import json
 import os
 import sys
@@ -20,6 +21,21 @@ import sqlite3
 
 from .embeddings import embed_text, cosine_similarity
 from .utils import Console, find_project_root, get_mcp_dir
+
+
+def current_project_id() -> str:
+    """
+    Stable identifier for the current project, used to scope memories in the
+    shared user-level store. Name plus a short path hash so two checkouts
+    with the same folder name do not collide. Empty string = global scope.
+    """
+    root = find_project_root()
+    if not root:
+        return ""
+    root = Path(root).resolve()
+    digest = hashlib.sha1(str(root).lower().encode("utf-8")).hexdigest()[:8]
+    return f"{root.name}-{digest}"
+
 
 @dataclass
 class Memory:
@@ -31,6 +47,8 @@ class Memory:
     updated: str = ""
     access_count: int = 0
     embedding: List[float] = field(default_factory=list)
+    # Project scope; empty string means global (visible everywhere).
+    project: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,9 +97,19 @@ class MemoryStore:
                         created TEXT,
                         updated TEXT,
                         access_count INTEGER DEFAULT 0,
-                        embedding TEXT
+                        embedding TEXT,
+                        project TEXT DEFAULT ''
                     )
                 """)
+            # Migration for stores created before project scoping existed;
+            # legacy rows keep project='' and stay globally visible.
+            try:
+                with self.conn:
+                    self.conn.execute(
+                        "ALTER TABLE memories ADD COLUMN project TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+            with self.conn:
                 self.conn.execute("""
                     CREATE TABLE IF NOT EXISTS activity_ledger (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,8 +138,8 @@ class MemoryStore:
                         tags_str = ",".join(val.get('tags', []))
                         emb_str = json.dumps(val.get('embedding', []))
                         self.conn.execute("""
-                            INSERT OR IGNORE INTO memories (key, value, tags, created, updated, access_count, embedding)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            INSERT OR IGNORE INTO memories (key, value, tags, created, updated, access_count, embedding, project)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, '')
                         """, (
                             key,
                             val.get('value', ''),
@@ -136,7 +164,7 @@ class MemoryStore:
             return
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT key, value, tags, created, updated, access_count, embedding FROM memories")
+            cursor.execute("SELECT key, value, tags, created, updated, access_count, embedding, project FROM memories")
             for row in cursor.fetchall():
                 tags = row[2].split(",") if row[2] else []
                 embedding = json.loads(row[6]) if row[6] else []
@@ -147,7 +175,8 @@ class MemoryStore:
                     created=row[3],
                     updated=row[4],
                     access_count=row[5],
-                    embedding=embedding
+                    embedding=embedding,
+                    project=row[7] or ""
                 )
         except Exception as e:
             Console.warn(f"Failed to load memories from SQLite: {e}")
@@ -163,8 +192,8 @@ class MemoryStore:
                     tags_str = ",".join(memory.tags) if memory.tags else ""
                     emb_str = json.dumps(memory.embedding) if memory.embedding else "[]"
                     self.conn.execute("""
-                        INSERT INTO memories (key, value, tags, created, updated, access_count, embedding)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO memories (key, value, tags, created, updated, access_count, embedding, project)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         memory.key,
                         memory.value,
@@ -172,14 +201,23 @@ class MemoryStore:
                         memory.created,
                         memory.updated,
                         memory.access_count,
-                        emb_str
+                        emb_str,
+                        memory.project
                     ))
         except Exception as e:
             Console.warn(f"Failed to sync memories to SQLite: {e}")
 
-    def remember(self, key: str, value: str, tags: List[str] = None) -> Memory:
-        """Store a memory in SQLite and update local cache."""
+    def remember(self, key: str, value: str, tags: List[str] = None,
+                 project: Optional[str] = None) -> Memory:
+        """
+        Store a memory in SQLite and update local cache.
+
+        project=None stamps the current project scope; pass an empty string
+        explicitly to store a global memory visible from every project.
+        """
         now = datetime.utcnow().isoformat() + 'Z'
+        if project is None:
+            project = current_project_id()
 
         # Generate embedding for semantic search
         combined = f"{key} {value}"
@@ -192,6 +230,7 @@ class MemoryStore:
             memory.updated = now
             memory.tags = tags or memory.tags
             memory.embedding = embedding
+            memory.project = project
         else:
             memory = Memory(
                 key=key,
@@ -199,7 +238,8 @@ class MemoryStore:
                 tags=tags or [],
                 created=now,
                 updated=now,
-                embedding=embedding
+                embedding=embedding,
+                project=project
             )
 
         self.memories[key] = memory
@@ -210,8 +250,8 @@ class MemoryStore:
                 emb_str = json.dumps(memory.embedding) if memory.embedding else "[]"
                 with self.conn:
                     self.conn.execute("""
-                        INSERT OR REPLACE INTO memories (key, value, tags, created, updated, access_count, embedding)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT OR REPLACE INTO memories (key, value, tags, created, updated, access_count, embedding, project)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         memory.key,
                         memory.value,
@@ -219,23 +259,36 @@ class MemoryStore:
                         memory.created,
                         memory.updated,
                         memory.access_count,
-                        emb_str
+                        emb_str,
+                        memory.project
                     ))
             except Exception as e:
                 Console.warn(f"Failed to write memory to SQLite: {e}")
         return memory
 
-    def recall(self, query: str, limit: int = 10) -> List[Memory]:
-        """Search memories semantically (queries fresh SQLite state)."""
+    def recall(self, query: str, limit: int = 10,
+               all_projects: bool = False) -> List[Memory]:
+        """
+        Search memories semantically (queries fresh SQLite state).
+
+        By default only the current project's memories and global (unscoped)
+        memories are searched, so a shared user-level store does not leak
+        unrelated projects into results. Pass all_projects=True to search
+        everything.
+        """
         self.load()
         if not self.memories:
             return []
+
+        scope = current_project_id()
 
         # Generate query embedding
         query_emb = embed_text(query)
 
         results = []
         for key, memory in self.memories.items():
+            if not all_projects and memory.project and memory.project != scope:
+                continue
             # Update access count
             memory.access_count += 1
 
@@ -296,7 +349,7 @@ class MemoryStore:
         if self.conn:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute("SELECT key, value, tags, created, updated, access_count, embedding FROM memories WHERE key = ?", (key,))
+                cursor.execute("SELECT key, value, tags, created, updated, access_count, embedding, project FROM memories WHERE key = ?", (key,))
                 row = cursor.fetchone()
                 if row:
                     tags = row[2].split(",") if row[2] else []
@@ -308,7 +361,8 @@ class MemoryStore:
                         created=row[3],
                         updated=row[4],
                         access_count=row[5],
-                        embedding=embedding
+                        embedding=embedding,
+                        project=row[7] or ""
                     )
             except Exception as e:
                 Console.warn(f"Failed to get memory by key from SQLite: {e}")
@@ -422,14 +476,15 @@ def get_store() -> MemoryStore:
     return _store
 
 
-def remember(key: str, value: str, tags: List[str] = None) -> Memory:
-    """Store a memory."""
-    return get_store().remember(key, value, tags)
+def remember(key: str, value: str, tags: List[str] = None,
+             project: Optional[str] = None) -> Memory:
+    """Store a memory (project=None stamps the current project scope)."""
+    return get_store().remember(key, value, tags, project=project)
 
 
-def recall(query: str, limit: int = 10) -> List[Memory]:
-    """Search memories."""
-    return get_store().recall(query, limit)
+def recall(query: str, limit: int = 10, all_projects: bool = False) -> List[Memory]:
+    """Search memories scoped to the current project plus globals."""
+    return get_store().recall(query, limit, all_projects=all_projects)
 
 
 def forget(key: str) -> bool:
@@ -462,9 +517,15 @@ def main():
         value = args[1]
         tags = args[2:] if len(args) > 2 else []
 
-        memory = store.remember(key, value, tags)
+        # --global stores an unscoped memory visible from every project.
+        project = "" if "--global" in sys.argv else None
+        memory = store.remember(key, value, tags, project=project)
         Console.ok(f"Remembered: {key}")
         print(f"  Value: {value}")
+        if memory.project:
+            print(f"  Scope: {memory.project}")
+        else:
+            print("  Scope: global")
         if tags:
             print(f"  Tags: {', '.join(tags)}")
         return 0
@@ -482,18 +543,21 @@ def main():
                 Console.warn(f"Not found: {query}")
             return 0
 
-        # Search
+        # Search; default scope is this project plus globals. Use
+        # --all-projects to search the entire shared store.
+        all_projects = "--all-projects" in sys.argv
         Console.info(f"Recalling: {query}")
-        results = store.recall(query)
+        results = store.recall(query, all_projects=all_projects)
 
         if results:
             for mem in results:
-                print(f"\n  [{mem.key}]")
+                scope = mem.project or "global"
+                print(f"\n  [{mem.key}] ({scope})")
                 print(f"  {mem.value}")
                 if mem.tags:
                     print(f"  Tags: {', '.join(mem.tags)}")
         else:
-            Console.warn("No matching memories")
+            Console.warn("No matching memories (try --all-projects for the full store)")
         return 0
 
     # List all
