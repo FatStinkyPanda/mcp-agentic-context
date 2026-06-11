@@ -1,7 +1,10 @@
 # MCP AI Agent: Complete Workflow Reference
 
 > **ENFORCED WORKFLOWS - READ AND ADHERE STRICTLY**
-> This document defines the MANDATORY operating procedures for all AI agents. Integrates MCP-Global with auto-learning, bypass detection, and strict enforcement.
+> This document defines the operating procedures for AI agents working on a
+> project with MCP Agentic Context installed. Every command listed here
+> exists in the current build; run `python mcp-agentic-rules/mcp.py help`
+> for the full registry.
 
 ---
 
@@ -17,46 +20,59 @@
 ## 2. Command Execution
 
 ```bash
-# Find MCP
-MCP=$(find . -name "mcp.py" -path "*/mcp-agentic-rules/*" | head -1)
+# Run commands from the project root:
+python mcp-agentic-rules/mcp.py <command> [args]
+```
 
-# Run commands
-python $MCP <command>
+Exit-code contract: 0 = success, 1 = failure. The CLI auto-bootstraps and
+re-executes inside the project's .venv.
+
+For MCP clients (Claude Code, Cursor), register the native server instead
+of shelling out:
+
+```json
+{"mcpServers": {"agentic-context": {
+    "command": "python",
+    "args": ["mcp-agentic-rules/mcp.py", "mcp-serve"]}}}
 ```
 
 ---
 
-## 3. Mandatory Tool Usage
+## 3. Recommended Tool Usage
+
+### At Session Start
+| Command | Purpose |
+|---------|---------|
+| `mcp serve --background` | Start the warm daemon: model + index stay loaded, search answers instantly |
+| `mcp autocontext [--budget N]` | Load layered context (map + memories + active files), budget-capped |
+| `mcp state` | View the project goal, tasks, and notes |
+| `mcp recall "topic"` | Check previous knowledge (project-scoped + global) |
 
 ### Before Making Changes
 | Command | Purpose |
 |---------|---------|
-| `mcp autocontext` | Load 3-tier context (warm+skeleton+semantic) |
-| `mcp predict-context "task"` | Pre-bundle predicted files for task |
-| `mcp hybrid-search "query"` | Multi-dimensional search |
-| `mcp graph "function"` | Query call graph relationships |
-| `mcp state` | View project goals and lessons |
-| `mcp recall "topic"` | Check previous knowledge |
+| `mcp search "query"` | Semantic code search by meaning (all languages) |
+| `mcp skeleton src/ [--budget N]` | Signature-only view of a module or tree |
+| `mcp impact <file>` | What breaks if this file changes (Python + TS/JS, pnpm-workspace aware) |
 
 ### During Development
 | Command | Purpose |
 |---------|---------|
-| `mcp skeleton src/` | Get compressed signature-only views |
-| `mcp predict-bugs file.py` | Predict potential bugs |
-| `mcp heal "error"` | Get fix suggestions for errors |
+| `mcp predict-bugs <file>` | Predict potential bugs |
 | `mcp fix src/ --safe` | Auto-fix safe issues |
+| `mcp state --add-task "..."` / `--done N` | Track increments |
 
 ### Before Committing
 | Command | Purpose |
 |---------|---------|
-| `mcp review . --strict` | Full quality review |
-| `mcp security .` | Security audit |
-| `mcp heal --learn "lesson"` | Record lessons learned |
+| `mcp review . --strict` | Full quality review (runs the repo's own eslint/tsc on JS/TS projects) |
+| `mcp security .` | Security audit (includes pnpm audit on pnpm projects) |
+| `mcp remember "lesson-key" "what was learned"` | Record lessons |
 
-### After Committing (Automatic via Hooks)
-- `mcp auto-learn --from-commit` - Extract lessons
-- `mcp learn-patterns` - Update correlations
-- `mcp hook-guardian --record-commit` - Track for bypass detection
+### After Changes
+| Command | Purpose |
+|---------|---------|
+| `mcp index-all` | Refresh indexes (incremental: unchanged files cost nothing) |
 
 ---
 
@@ -65,7 +81,7 @@ python $MCP <command>
 ### "dev" - Autonomous Development
 1. Load context: `mcp autocontext`
 2. Read README.md
-3. Get tasks: `mcp todos`
+3. Get tasks: `mcp state` and `mcp todos`
 4. Implement autonomously
 5. Commit incrementally
 
@@ -77,58 +93,53 @@ python $MCP <command>
 
 ---
 
-## 5. Learning System
+## 5. Memory System
 
-MCP learns automatically from:
+Memories live in a user-level store shared across projects, scoped per
+project so recall never leaks unrelated work:
 
-| Source | What It Learns | Trigger |
-|--------|----------------|---------|
-| Commits | Lessons from messages | `auto-learn --from-commit` |
-| Tests | Success/failure patterns | `auto-learn --from-test` |
-| Access | File sequences (A→B→C) | Automatic |
-| Git | Co-modification patterns | `learn-patterns` |
-
-### Recording Lessons
 ```bash
-mcp heal --learn "Use pathlib instead of os.path"
-mcp remember "auth" "src/auth/handler.py"
+mcp remember "auth" "src/auth/handler.ts is the entry point"   # this project
+mcp remember "style" "prefer pathlib over os.path" --global    # everywhere
+mcp recall "auth"                  # this project + globals
+mcp recall "auth" --all-projects   # the whole store
+mcp forget "auth"
+```
+
+Project state (goal/tasks/notes) lives in `.mcp/project_state.json`:
+
+```bash
 mcp state --set-goal "Implement feature X"
+mcp state --add-task "Write E2E test"
+mcp state --done 1
+mcp state --note "API returns 204 on empty lists"
 ```
 
 ---
 
-## 6. Hook Enforcement
+## 6. Git Hooks
 
-**All hooks are strictly enforced with bypass detection:**
-
-| Hook | Actions |
-|------|---------|
-| pre-commit | Record flag + fix + bugs + security + review |
-| post-commit | Record commit + auto-learn + correlations + index |
-| pre-push | Verify no bypasses + security + architecture |
-
-**Bypass Detection**: Using `--no-verify` is logged. Warnings on push.
-
-```bash
-mcp hook-guardian          # View bypass status
-mcp hook-guardian --verify-all   # Check for bypasses
-mcp hook-guardian --reconcile    # Run skipped checks
-```
+`mcp setup --hooks` installs six hooks (pre-commit, post-commit,
+commit-msg, pre-push, post-checkout, post-merge) that run fix/review/
+security gates and keep indexes fresh. Never bypass them with
+--no-verify; fix the underlying issue instead.
 
 ---
 
-## 7. Command Reference (60+ Commands)
+## 7. Command Reference
 
 | Category | Commands |
 |----------|----------|
-| **Context** | `autocontext`, `predict-context`, `context`, `search`, `find` |
-| **Skeleton** | `skeleton`, `graph`, `call-graph`, `state`, `project-state` |
-| **Hybrid** | `hybrid-search`, `hybrid`, `correlate`, `learn-patterns` |
-| **Learning** | `auto-learn`, `heal`, `lessons`, `remember`, `recall` |
-| **Hooks** | `hook-guardian` |
-| **Analysis** | `review`, `security`, `profile`, `errors`, `predict-bugs` |
-| **Testing** | `test-gen`, `test`, `test-coverage` |
-| **Management** | `index-all`, `todos`, `summarize` |
+| **Context** | `autocontext [--budget N]`, `context`, `search`, `find`, `skeleton`, `state` |
+| **Memory** | `remember [--global]`, `recall [--all-projects]`, `forget`, `learn` |
+| **Analysis** | `review`, `security`, `profile`, `errors`, `architecture`, `deps`, `predict-bugs`, `risk-score`, `impact` |
+| **Quality** | `fix`, `docs`, `deadcode`, `refactor`, `migrate`, `coverage` |
+| **Testing** | `test`, `test-gen`, `test-coverage` |
+| **Indexing** | `index-all`, `index [--full]`, `git-history`, `todos`, `doc-index`, `config-index` |
+| **Daemons** | `serve [--background/--status/--stop]`, `mcp-serve`, `watch`, `warm` |
+| **Multi-Repo** | `search-all`, `repos`, `comms`, `nsync` |
+| **CI/CD** | `github-action`, `pipeline` |
+| **Setup** | `setup`, `doctor`, `verify`, `gui`, `pack` |
 
 ---
 
@@ -136,12 +147,12 @@ mcp hook-guardian --reconcile    # Run skipped checks
 
 | File | Purpose |
 |------|---------|
-| `.mcp/lessons_learned.md` | Auto-injected into every context |
-| `.mcp/project_state.json` | Goals, tasks, milestones |
-| `.mcp/hybrid_graph.json` | Multi-dimensional knowledge graph |
-| `.mcp/enhanced_learning.json` | Effectiveness scores, patterns |
-| `.mcp/hook_guardian.json` | Commit tracking, bypass detection |
+| `.mcp/project_state.json` | Goal, tasks, notes (the `state` command) |
+| `.mcp/vector_index/` | Semantic chunks, embeddings, per-file fingerprints |
+| `.mcp/serve.json` | Warm daemon endpoint (written on start, removed on stop) |
+| `.mcp/impact_graph.json` | Dependency graph for impact analysis |
+| `~/.mcp/memory/knowledge.db` | Shared memory store (project-scoped rows) |
 
 ---
 
-**System Status**: STRICTLY ENFORCED
+**System Status**: ACTIVELY MAINTAINED - docs verified against the command registry

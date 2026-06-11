@@ -1,6 +1,6 @@
 # MCP Agentic Context (formerly MCP Global Rules)
 
-> **AI Agent Enhancement & Unlimited Context Package** — 53 Scripts | 48 Commands | 6 Git Hooks | Offline-First
+> **AI Agent Enhancement & Unlimited Context Package** - 64 Scripts | 66 Commands | 6 Git Hooks | Offline-First Core
 
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
 
@@ -22,7 +22,7 @@ When an AI agent (Claude, Gemini, GPT-4, local LLM, etc.) works on a project wit
 - **Security auditing** — scan for secrets, vulnerabilities, and injection risks before every push
 - **Bug prediction** — AI-powered analysis to catch issues before they ship
 - **Multi-agent coordination** — agents on different machines collaborate via `mcp comms`
-- **Full offline operation** — 90+ bundled wheel files, no internet required
+- **Offline-first core** - every core tool is stdlib-only and runs with no internet; optional accelerators (sentence-transformers, faiss-cpu, tree-sitter grammars, numpy, watchdog) install from PyPI and are cached for offline use afterwards
 
 ---
 
@@ -82,12 +82,12 @@ python mcp-agentic-rules/mcp.py index-all
 
 - **Python 3.8+** (3.11+ recommended for full vendor package support)
 - **Git** (for hooks and history indexing)
-- No other dependencies required for core tools — all 53 scripts use Python stdlib only
+- No other dependencies required for core tools - the core scripts use Python stdlib only
 - Optional: bundled vendor wheels in `vendor/python-packages-py311/` for enhanced analysis
 
 ---
 
-## Command Reference (50 Commands)
+## Command Reference (66 Commands)
 
 Run all commands from your **project root**:
 
@@ -99,17 +99,22 @@ python mcp-agentic-rules/mcp.py <command> [args]
 
 | Command | Description |
 |---------|-------------|
-| `autocontext` | Auto-load all relevant context for the current task |
+| `autocontext [--budget N]` | Auto-load all relevant context, hard-capped to the budget |
 | `context "query"` | Get targeted context for a specific topic |
-| `search "query"` | Semantic code search by meaning |
+| `search "query"` | Semantic code search by meaning (uses the warm daemon when running) |
 | `find "name"` | Find files and components by natural language |
+| `skeleton [path] [--budget N]` | Signature-only view of files or directories |
+| `state [--set-goal/--add-task/--done N/--note]` | Shared project goal, tasks, and notes |
 
 ### AI Memory
 
+Memories are scoped to the current project by default; global memories are
+visible everywhere. Legacy memories created before scoping stay global.
+
 | Command | Description |
 |---------|-------------|
-| `remember "key" "value"` | Store a persistent knowledge item |
-| `recall "query"` | Search stored memories and learned patterns |
+| `remember "key" "value" [--global]` | Store a persistent knowledge item |
+| `recall "query" [--all-projects]` | Search this project's and global memories |
 | `forget "key"` | Remove a memory item |
 | `learn [--patterns]` | View and reinforce learned patterns |
 
@@ -147,7 +152,8 @@ python mcp-agentic-rules/mcp.py <command> [args]
 
 | Command | Description |
 |---------|-------------|
-| `index-all` | Full rebuild of all 7 indexes |
+| `index-all` | Build all 7 indexes (semantic index is incremental: unchanged files keep their embeddings, deleted files are evicted) |
+| `index [--full]` | Rebuild the semantic index; --full forces re-embedding everything |
 | `git-history [file]` | Index and query git commit history |
 | `todos` | List all TODO/FIXME items by priority |
 | `test-coverage` | Index coverage data from pytest |
@@ -168,6 +174,8 @@ python mcp-agentic-rules/mcp.py <command> [args]
 |---------|-------------|
 | `watch [path]` | Live index updates on file change |
 | `warm` | Pre-warm all indexes (run at session start) |
+| `serve [--background/--status/--stop]` | Warm daemon: the model and index stay loaded, search answers in milliseconds |
+| `mcp-serve` | Model Context Protocol server over stdio for MCP clients (Claude Code, Cursor) |
 | `summarize [--output FILE]` | Generate codebase summary |
 | `changelog` | Auto-generate changelog from git history |
 
@@ -387,7 +395,7 @@ mcp-agentic-rules/
 ├── global_rules.md           # Full AI agent rules (add to agent instructions)
 ├── AI_AGENT_INSTRUCTIONS.md  # Concise enforced workflow reference
 ├── DEPENDENCIES.md           # Full dependency documentation
-├── scripts/                  # 53 Python tool modules
+├── scripts/                  # 64 Python tool modules
 │   ├── autocontext.py        # Context auto-loader
 │   ├── memory.py             # Persistent AI memory
 │   ├── review.py             # Code review automation
@@ -399,7 +407,12 @@ mcp-agentic-rules/
 │   ├── nsync.py              # Remote sync and execution
 │   ├── auto_test.py          # Test generation
 │   ├── index_all.py          # Full index rebuild
-│   └── ...                   # 42 more tools
+│   ├── serve.py              # Warm daemon (instant search/recall)
+│   ├── mcp_server.py         # Model Context Protocol server (stdio)
+│   ├── skeleton.py           # Signature-only views
+│   ├── project_state.py      # Shared goals/tasks/notes
+│   ├── js_toolchain.py       # eslint/tsc/pnpm-audit bridge
+│   └── ...                   # 48 more tools
 ├── .git-hooks/               # 6 enforceable git hooks
 │   ├── pre-commit
 │   ├── post-commit
@@ -407,8 +420,8 @@ mcp-agentic-rules/
 │   ├── pre-push
 │   ├── post-checkout
 │   └── post-merge
-├── vendor/                   # Offline packages
-│   ├── python-packages-py311/  # 90+ wheel files
+├── vendor/                   # Optional offline packages
+│   ├── python-packages-py311/  # Place wheels here for air-gapped installs (not bundled)
 │   └── mcp-servers/            # MCP server configs
 └── config/                   # Configuration templates
 ```

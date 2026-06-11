@@ -1,46 +1,59 @@
 # MCP Agentic Context - AI Agent Instructions
 
-## Available Commands (50 total)
+## Available Commands (66 total)
 
-Run with: `python3 mcp-agentic-rules/mcp.py <command>`
+Run with: `python mcp-agentic-rules/mcp.py <command>` (use `python`, not
+`python3` - on Windows python3 is often a broken Store stub). Exit codes:
+0 = success, 1 = failure.
+
+### Session Start
+```bash
+mcp serve --background       # Warm daemon: instant search/recall afterwards
+mcp autocontext --budget 8000  # Load relevant context, budget-capped
+mcp state                    # Project goal, tasks, notes
+mcp recall "topic"           # Search memory (this project + globals)
+```
 
 ### Before Coding
-`ash
-mcp autocontext              # Load relevant context
-mcp recall "topic"           # Search memory
-mcp search "query"           # Semantic code search
-`
+```bash
+mcp search "query"           # Semantic code search (all languages)
+mcp skeleton src/            # Signature-only view of a module or tree
+mcp impact file.ts           # What breaks? (pnpm-workspace aware)
+```
 
 ### While Coding
-`ash
+```bash
 mcp predict-bugs file.py     # Check for bugs
-mcp impact file.py           # What breaks?
-mcp context "query"          # Get context
-`
+mcp context "query"          # Get targeted context
+mcp state --add-task "..."   # Track increments (--done N to finish)
+```
 
 ### After Coding
-`ash
-mcp review file.py           # Code review
-mcp security file.py         # Security check
+```bash
+mcp review .                 # Code review (runs repo eslint/tsc on JS/TS)
+mcp security .               # Security check (includes pnpm audit)
 mcp test-gen file.py --impl  # Generate tests
-`
-
-### Project Packs
-`ash
-mcp pack list                # List available project packs
-mcp pack install <pack_name> # Setup virtual environment and install pack
-`
+mcp index-all                # Refresh indexes (incremental)
+```
 
 ### Remember & Learn
-`ash
-mcp remember "key" "value"   # Store knowledge
-mcp recall "query"           # Search knowledge
-mcp learn --patterns         # View learned patterns
-`
+```bash
+mcp remember "key" "value"            # Store knowledge (this project)
+mcp remember "key" "value" --global   # Visible from every project
+mcp recall "query" [--all-projects]   # Search knowledge
+mcp learn --patterns                  # View learned patterns
+```
 
-## Hooks (Automatic)
+### MCP Clients (Claude Code, Cursor)
+Register the native Model Context Protocol server instead of shelling out:
+```json
+{"mcpServers": {"agentic-context": {
+    "command": "python",
+    "args": ["mcp-agentic-rules/mcp.py", "mcp-serve"]}}}
+```
 
-All hooks are installed and will run automatically:
+## Hooks (via `mcp setup --hooks`)
+
 - **pre-commit**: Auto-fix, risk check, security scan, review
 - **post-commit**: Learning, index update
 - **post-checkout**: Warm indexes
@@ -48,15 +61,19 @@ All hooks are installed and will run automatically:
 ## Key Directories
 
 - `mcp-agentic-rules/` - MCP package
-- `.mcp/` - Index data (auto-generated)
+- `.mcp/` - Index data, project state, daemon endpoint (auto-generated)
 
 ## Quick Reference
 
 | Need | Command |
 |------|---------|
-| Context | `mcp autocontext` |
+| Context | `mcp autocontext [--budget N]` |
 | Search | `mcp search "query"` |
+| Shape of a module | `mcp skeleton <path>` |
+| Goal/tasks | `mcp state` |
 | Review | `mcp review .` |
 | Bugs | `mcp predict-bugs .` |
+| Impact | `mcp impact <file>` |
 | Tests | `mcp test-gen file.py` |
-| Memory | `mcp remember/recall` |
+| Memory | `mcp remember` / `mcp recall` |
+| Speed | `mcp serve --background` |
