@@ -3,9 +3,10 @@ Model Context Protocol Server
 =============================
 Exposes the toolkit's capabilities as REAL MCP tools over stdio JSON-RPC,
 so MCP clients (Claude Code, Cursor, etc.) call semantic_search, recall,
-remember, autocontext, skeleton, and project_state natively - no shelling
-out, no output parsing, and the embedding model stays warm for the life
-of the session. Stdlib only; newline-delimited JSON-RPC 2.0.
+remember, autocontext, skeleton, project_state, impact, review, security,
+and todos natively - no shelling out, no output parsing, and the embedding
+model stays warm for the life of the session. Stdlib only;
+newline-delimited JSON-RPC 2.0.
 
 Usage:
     python mcp.py mcp-serve
@@ -125,7 +126,75 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "impact",
+        "description": "Use this BEFORE modifying or refactoring a shared "
+                       "file: returns what imports it, transitively, and "
+                       "which tests are affected (Python and TS/JS, pnpm "
+                       "workspace aware).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string",
+                         "description": "File path, relative to project root"},
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "review",
+        "description": "Use this BEFORE committing: automated code review of "
+                       "the project or a path. On JS/TS projects it runs the "
+                       "repo's OWN eslint and tsc and merges their findings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string",
+                         "description": "File or directory, relative to project root (default: whole project)"},
+                "strict": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "security",
+        "description": "Use this BEFORE pushing: security audit for secrets, "
+                       "injection risks, and (on pnpm projects) dependency "
+                       "vulnerabilities via pnpm audit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string",
+                         "description": "File or directory, relative to project root (default: whole project)"},
+                "strict": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "todos",
+        "description": "Use this when planning work or before declaring done: "
+                       "lists TODO/FIXME/HACK comments across the codebase, "
+                       "highest priority first.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer",
+                          "description": "Max items to return (default 30)"},
+            },
+        },
+    },
 ]
+
+# Tool output is conversation context; cap pathological reports.
+MAX_TOOL_OUTPUT = 20000
+
+
+def _cap(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
+    """Cap tool output so a pathological report cannot flood agent context."""
+    if len(text) <= limit:
+        return text
+    return (text[:limit]
+            + "\n\n[TRUNCATED] Output exceeded %d chars; narrow the path "
+              "to see the rest." % limit)
 
 
 class MCPServer:
@@ -216,6 +285,53 @@ class MCPServer:
         if changed:
             save_state(state, self.root)
         return render(state)
+
+    def tool_impact(self, args: dict) -> str:
+        from .impact import analyze_impact
+        target = self.root / str(args.get("file", ""))
+        if not target.exists():
+            return f"File not found: {target}"
+        report = analyze_impact(target, self.root)
+        return _cap(report.to_markdown())
+
+    def tool_review(self, args: dict) -> str:
+        from .review import review_project, format_report_markdown
+        path = self.root / str(args.get("path") or "")
+        if not path.exists():
+            return f"Path not found: {path}"
+        report = review_project(path, strict=bool(args.get("strict")))
+        return _cap(format_report_markdown(report))
+
+    def tool_security(self, args: dict) -> str:
+        from .security import security_audit
+        path = self.root / str(args.get("path") or "")
+        if not path.exists():
+            return f"Path not found: {path}"
+        report = security_audit(path, strict=bool(args.get("strict")))
+        return _cap(report.to_markdown())
+
+    def tool_todos(self, args: dict) -> str:
+        from .todo_index import scan_project, group_by_priority
+        excludes = ["node_modules", ".git", "dist", "build", ".next",
+                    ".turbo", ".venv", "vendor", "__pycache__", ".mcp"]
+        todos = scan_project(self.root, exclude_patterns=excludes)
+        if not todos:
+            return "No TODO/FIXME items found."
+        limit = int(args.get("limit", 30))
+        lines = []
+        by_priority = group_by_priority(todos)
+        for priority in sorted(by_priority):
+            for item in by_priority[priority]:
+                lines.append(f"[P{item.priority}] {item.type} "
+                             f"{item.file}:{item.line} - {item.message}")
+                if len(lines) >= limit:
+                    break
+            if len(lines) >= limit:
+                break
+        if len(todos) > limit:
+            lines.append(f"... and {len(todos) - limit} more "
+                         f"(raise limit to see them)")
+        return _cap("\n".join(lines))
 
     # ---- protocol --------------------------------------------------------
 

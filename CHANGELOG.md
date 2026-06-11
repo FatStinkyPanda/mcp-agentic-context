@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- MCP server: four new tools join the native set - impact (what breaks if
+  this file changes), review and security (pre-commit/pre-push gates
+  returning structured reports, using the repo's own toolchain on JS/TS),
+  and todos (priority-ordered TODO/FIXME listing). All tool outputs are
+  capped so a pathological report cannot flood agent context. Ten tools
+  total, ~1.1k tokens of schemas per session.
+
 ## v2.0.0 (2026-06-10)
 
 Large-codebase readiness, agent-native integration, and a first-class

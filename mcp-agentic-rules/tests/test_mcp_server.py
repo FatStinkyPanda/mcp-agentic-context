@@ -44,7 +44,8 @@ class TestProtocol:
         tools = resp["result"]["tools"]
         names = {t["name"] for t in tools}
         for expected in ("semantic_search", "recall_memory", "remember",
-                         "autocontext", "skeleton", "project_state"):
+                         "autocontext", "skeleton", "project_state",
+                         "impact", "review", "security", "todos"):
             if expected not in names:
                 raise AssertionError("tool %s missing from tools/list" % expected)
         if len(tools) != len(TOOLS):
@@ -74,6 +75,45 @@ class TestProtocol:
         text = resp["result"]["content"][0]["text"]
         if "Ship it" not in text:
             raise AssertionError("project_state did not persist the goal")
+
+    def test_impact_tool(self, project):
+        (project / "src" / "consumer.ts").write_text(
+            "import { makeThing } from './thing';\n"
+            "export const built = makeThing(1);\n")
+        server = MCPServer(project)
+        resp = server.handle_message({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": {"name": "impact",
+                       "arguments": {"file": "src/thing.ts"}}})
+        result = resp["result"]
+        if result.get("isError"):
+            raise AssertionError("impact tool errored: %r" % result)
+        text = result["content"][0]["text"]
+        if "consumer.ts" not in text:
+            raise AssertionError("impact must list the dependent file: %s" % text)
+
+    def test_todos_tool(self, project):
+        (project / "src" / "later.ts").write_text(
+            "// TODO: wire up pagination here\nexport const x = 1;\n")
+        server = MCPServer(project)
+        resp = server.handle_message({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "todos", "arguments": {}}})
+        text = resp["result"]["content"][0]["text"]
+        if "pagination" not in text:
+            raise AssertionError("todos must surface the TODO comment: %s" % text)
+
+    def test_review_and_security_tools_run(self, project):
+        server = MCPServer(project)
+        for tool in ("review", "security"):
+            resp = server.handle_message({
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": {"name": tool, "arguments": {}}})
+            result = resp["result"]
+            if result.get("isError"):
+                raise AssertionError("%s tool errored: %r" % (tool, result))
+            if "Report" not in result["content"][0]["text"]:
+                raise AssertionError("%s must return a report" % tool)
 
     def test_unknown_method_returns_error(self, project):
         server = MCPServer(project)
