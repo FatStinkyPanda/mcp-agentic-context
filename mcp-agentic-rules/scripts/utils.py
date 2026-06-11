@@ -275,10 +275,25 @@ def find_project_root(start: Path = None) -> Optional[Path]:
     if start is None:
         start = Path.cwd()
 
-    markers = ['.git', 'pyproject.toml', 'setup.py', 'setup.cfg', '.mcp']
+    markers = [
+        '.git', '.mcp',
+        # Python projects
+        'pyproject.toml', 'setup.py', 'setup.cfg',
+        # JS/TS projects and monorepos
+        'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml',
+        'turbo.json', 'nx.json', 'yarn.lock', 'package-lock.json',
+    ]
+
+    # The user home directory must NEVER be treated as a project root: the
+    # global memory store lives at ~/.mcp and matches the '.mcp' marker, which
+    # previously made markerless projects resolve to home and index the whole
+    # home directory.
+    home = Path.home().resolve()
 
     # helper to check markers
     def check_dir(d: Path) -> bool:
+        if d == home:
+            return False
         for marker in markers:
             if (d / marker).exists():
                 return True
@@ -293,26 +308,26 @@ def find_project_root(start: Path = None) -> Optional[Path]:
         if check_dir(mcp_root.parent):
             return mcp_root.parent
 
-        # Search up from mcp_root
+        # Search up from mcp_root, stopping at the home directory boundary
         curr = mcp_root.parent
-        while curr != curr.parent:
+        while curr != curr.parent and curr != home:
             if check_dir(curr):
                 return curr
             curr = curr.parent
 
-    # B. Search up from start (cwd)
+        # The package is installed in this project; its parent IS the project
+        # even without markers. Far safer than walking past it.
+        return mcp_root.parent
+
+    # B. Search up from start (cwd), stopping at the home directory boundary
     if start is None:
         start = Path.cwd()
 
     current = Path(start).resolve()
-    while current != current.parent:
+    while current != current.parent and current != home:
         if check_dir(current):
             return current
         current = current.parent
-
-    # C. Last resort: if we have mcp_root, return its parent even without markers
-    if mcp_root_env:
-        return Path(mcp_root_env).resolve().parent
 
     return None
 
