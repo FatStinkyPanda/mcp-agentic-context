@@ -12,12 +12,18 @@ import subprocess
 import sys
 import time
 
-# Configuration - Shared with NSync
-WINDOWS_NSYNC = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/NSync")
-LINUX_NSYNC = Path("/home/p4nd4pr0t0c01/Projects/NSync")
-
 def get_nsync_path() -> Path:
-    return WINDOWS_NSYNC if os.name == 'nt' else LINUX_NSYNC
+    """
+    Root directory shared with NSync for cross-machine agent communication.
+
+    Configure with the MCP_NSYNC_PATH environment variable; defaults to the
+    per-user MCP data directory so no machine-specific path is baked into
+    the source.
+    """
+    override = os.environ.get('MCP_NSYNC_PATH')
+    if override:
+        return Path(override)
+    return Path.home() / '.mcp' / 'nsync'
 
 def get_comms_dir() -> Path:
     comms_dir = get_nsync_path() / ".nsync_agents"

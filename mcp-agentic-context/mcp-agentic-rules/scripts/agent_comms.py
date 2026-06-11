@@ -13,8 +13,8 @@ import sys
 import time
 
 # Configuration - Shared with NSync
-WINDOWS_NSYNC = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/NSync")
-LINUX_NSYNC = Path("/home/p4nd4pr0t0c01/Projects/NSync")
+WINDOWS_NSYNC = Path("C:/MCP/Projects/NSync")
+LINUX_NSYNC = Path("/home/<remote-user>/Projects/NSync")
 
 def get_nsync_path() -> Path:
     return WINDOWS_NSYNC if os.name == 'nt' else LINUX_NSYNC

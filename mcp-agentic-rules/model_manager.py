@@ -11,8 +11,16 @@ import json
 import os
 import sys
 
-# Configuration Path
-CONFIG_PATH = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/mcp-agentic-rules/model_preferences.json") if os.name == 'nt' else Path("/home/p4nd4pr0t0c01/Projects/mcp-agentic-rules/model_preferences.json")
+# Configuration path: override with MCP_MODEL_PREFS; defaults to the per-user
+# MCP data directory so no machine-specific path is baked into the source.
+def _config_path() -> Path:
+    override = os.environ.get("MCP_MODEL_PREFS")
+    if override:
+        return Path(override)
+    return Path.home() / ".mcp" / "model_preferences.json"
+
+
+CONFIG_PATH = _config_path()
 
 DEFAULT_PRIORITY = [
     "Gemini 3 Flash",

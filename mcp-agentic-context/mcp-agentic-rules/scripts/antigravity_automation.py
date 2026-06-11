@@ -47,9 +47,9 @@ class AntigravityBridge:
         else:
             # Auto-detect based on hostname
             if os.name == 'nt':  # Windows - Quasar
-                self.workspace_path = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_")
+                self.workspace_path = Path("C:/MCP/Projects")
             else:  # Linux - WizardPanda
-                self.workspace_path = Path("/home/p4nd4pr0t0c01/Projects/_BLANK_")
+                self.workspace_path = Path("/home/<remote-user>/Projects/workspace")
 
         print(f"[INFO] Workspace path set to: {self.workspace_path}")
 
@@ -346,7 +346,7 @@ class AntigravityBridge:
             while (time.time() - start_time) < timeout_seconds:
                 try:
                     # Look for text content in the agent panel
-                    # The agent panel is on the right side with heading "_BLANK_"
+                    # The agent panel is on the right side with heading matching the workspace name
 
                     # Try to find the agent panel container
                     agent_panel_selectors = [

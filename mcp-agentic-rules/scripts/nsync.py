@@ -34,7 +34,9 @@ def get_remote_peer():
         return "quasar"
     return "wizardpanda"
 
-REMOTE_USER = "p4nd4pr0t0c01"
+# Remote account used on the peer machine; configure per deployment instead
+# of baking a personal username into the source.
+REMOTE_USER = os.environ.get("MCP_NSYNC_REMOTE_USER", "mcp")
 
 class NSyncHandler(FileSystemEventHandler):
     """Handles file system events and triggers git sync."""
@@ -76,7 +78,8 @@ class NSyncHandler(FileSystemEventHandler):
 
     def ensure_rules_links(self):
         """Iterate through all projects and ensure mcp-agentic-rules is linked."""
-        mcp_source = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/mcp-agentic-rules") if os.name == 'nt' else Path("/home/p4nd4pr0t0c01/Projects/mcp-agentic-rules")
+        # The running install IS the canonical source; never hardcode a path.
+        mcp_source = Path(os.environ.get("MCP_ROOT") or Path(__file__).resolve().parents[1])
 
         for item in self.repo_path.iterdir():
             if item.is_dir() and not item.name.startswith("."):
@@ -132,8 +135,8 @@ def init_project(name: str):
     project_path.mkdir(parents=True)
     print(f"[OK] Created project directory: {project_path}")
 
-    # Create link to mcp-agentic-rules
-    mcp_source = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/mcp-agentic-rules") if os.name == 'nt' else Path("/home/p4nd4pr0t0c01/Projects/mcp-agentic-rules")
+    # Create link to mcp-agentic-rules; the running install is the source.
+    mcp_source = Path(os.environ.get("MCP_ROOT") or Path(__file__).resolve().parents[1])
     mcp_target = project_path / "mcp-agentic-rules"
 
     try:
@@ -322,7 +325,7 @@ def setup_hooks():
             f.write(f"#!/bin/sh\n{sync_cmd}\n")
     else:
         with open(post_commit_path, "w") as f:
-            f.write(f"#!/bin/bash\npython3 /home/p4nd4pr0t0c01/Projects/mcp-agentic-rules/mcp.py nsync sync\n")
+            f.write(f"#!/bin/bash\npython3 /home/{REMOTE_USER}/Projects/mcp-agentic-rules/mcp.py nsync sync\n")
 
     os.chmod(post_commit_path, 0o755)
     print(f"[OK] Installed post-commit hook at {post_commit_path}")
@@ -335,7 +338,7 @@ def setup_hooks():
             f.write(f"#!/bin/sh\n{index_cmd}\n")
     else:
         with open(post_merge_path, "w") as f:
-            f.write(f"#!/bin/bash\npython3 /home/p4nd4pr0t0c01/Projects/mcp-agentic-rules/mcp.py index-all\n")
+            f.write(f"#!/bin/bash\npython3 /home/{REMOTE_USER}/Projects/mcp-agentic-rules/mcp.py index-all\n")
 
     os.chmod(post_merge_path, 0o755)
     print(f"[OK] Installed post-merge hook at {post_merge_path}")

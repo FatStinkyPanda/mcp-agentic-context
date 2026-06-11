@@ -250,7 +250,7 @@ WizardPanda is equipped with over 70 tools. Use `mcp cybersec list` to explore. 
 
 ### Enforcement & Safety
 - **Impacket**: Always run via `mcp cybersec <tool>` to ensure the correct VENV is used.
-- **Root**: Tools requiring `sudo` are pre-authorized for the `p4nd4pr0t0c01` user.
+- **Root**: Tools requiring `sudo` are pre-authorized for the `<remote-user>` user.
 - **Reporting**: Always pipe large outputs to `outputs/` within the NSync directory for sync.
 
 ---
@@ -278,12 +278,12 @@ Any development intended for remote execution on `wizardpanda` MUST follow this 
    This creates a folder in `NSync/` and links `mcp-agentic-rules` so the agent always has its tools.
 
 2. **Develop Locally**:
-   - Write all code inside `C:\Users\dbiss\Desktop\Projects\_BLANK_\NSync\<project_name>\`.
+   - Write all code inside `C:\MCP\Projects\NSync\<project_name>\`.
    - Use standard MCP tools (security, review, etc.) locally before syncing.
 
 3. **Automatic Synchronization**:
    - Changes are broadcast in real-time. Ensure `mcp nsync watch` is running on your host.
-   - Files appear on `wizardpanda` at `/home/p4nd4pr0t0c01/Projects/NSync/<project_name>/`.
+   - Files appear on `wizardpanda` at `/home/<remote-user>/Projects/NSync/<project_name>/`.
 
 4. **Remote Execution & Validation**:
    ```bash
@@ -301,7 +301,7 @@ Any development intended for remote execution on `wizardpanda` MUST follow this 
 ## Remote Access: WizardPanda
 
 - **Host**: `wizardpanda` (Tailscale IP: `100.121.26.87`)
-- **User**: `p4nd4pr0t0c01`
+- **User**: `<remote-user>`
 - **Environment**: Raspberry Pi 5 (Debian 12), Python 3.11.
 - **Tools**: Full suite located in `~/cybersec` and categorized in `mcp cybersec`.
 

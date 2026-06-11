@@ -12,7 +12,7 @@ import os
 import sys
 
 # Configuration Path
-CONFIG_PATH = Path("C:/Users/dbiss/Desktop/Projects/_BLANK_/mcp-agentic-rules/model_preferences.json") if os.name == 'nt' else Path("/home/p4nd4pr0t0c01/Projects/mcp-agentic-rules/model_preferences.json")
+CONFIG_PATH = Path("C:/MCP/Projects/mcp-agentic-rules/model_preferences.json") if os.name == 'nt' else Path("/home/<remote-user>/Projects/mcp-agentic-rules/model_preferences.json")
 
 DEFAULT_PRIORITY = [
     "Gemini 3 Flash",

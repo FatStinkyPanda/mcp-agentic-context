@@ -107,8 +107,9 @@ mcp_prompt() {
     fi
 }
 
-# Auto-start NSync watch for the main project directory if it exists
-NSYNC_DIR="/home/p4nd4pr0t0c01/Projects/NSync"
+# Auto-start NSync watch for the main project directory if it exists.
+# Configure with MCP_NSYNC_PATH; defaults to the per-user MCP data dir.
+NSYNC_DIR="${MCP_NSYNC_PATH:-$HOME/.mcp/nsync}"
 if [ -d "$NSYNC_DIR" ]; then
     if [[ $- == *i* ]]; then
         echo -e "\033[0;36m[MCP] Starting NSync & Autonomous Collaboration background services...\033[0m"

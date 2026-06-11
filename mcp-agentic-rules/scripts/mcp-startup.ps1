@@ -34,8 +34,9 @@ function Start-MCPWatcher {
         python mcp.py watch
     } -ArgumentList $MCPPath | Out-Null
     
-    # Auto-start NSync watch for the main project directory if it exists
-    $nsync_dir = "C:\Users\dbiss\Desktop\Projects\_BLANK_\NSync"
+    # Auto-start NSync watch for the main project directory if it exists.
+    # Configure with MCP_NSYNC_PATH; defaults to the per-user MCP data dir.
+    $nsync_dir = if ($env:MCP_NSYNC_PATH) { $env:MCP_NSYNC_PATH } else { "$env:USERPROFILE\.mcp\nsync" }
     if (Test-Path $nsync_dir) {
         Write-Host "[MCP] Starting NSync & Autonomous Collaboration background services..." -ForegroundColor Cyan
         Start-Process powershell -ArgumentList "-Command", "cd $nsync_dir; python $MCPPath/mcp.py nsync watch" -WindowStyle Hidden
