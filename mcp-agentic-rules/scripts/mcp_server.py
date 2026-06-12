@@ -27,7 +27,7 @@ import sys
 from .utils import find_project_root
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "mcp-agentic-context", "version": "2.2.0"}
+SERVER_INFO = {"name": "mcp-agentic-context", "version": "2.3.0"}
 
 TOOLS: List[Dict[str, Any]] = [
     {

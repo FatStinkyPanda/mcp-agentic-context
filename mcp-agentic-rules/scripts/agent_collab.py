@@ -2102,7 +2102,7 @@ sys.path.insert(0, os.environ["MCP_PKG_ROOT"])
 from scripts import agent_collab as ac
 store = os.environ["MCP_NSYNC_PATH"]
 go = os.path.join(store, "race-go")
-deadline = time.time() + 10
+deadline = time.time() + 45     # loaded-box budget: interpreters may start slowly
 while not os.path.exists(go):
     if time.time() > deadline:
         sys.exit(3)
@@ -2720,7 +2720,7 @@ def selftest():
             (Path(store) / "race-go").write_text("go", encoding="utf-8")  # write-ok: barrier flag
             for p in procs:
                 try:
-                    p.wait(timeout=30)
+                    p.wait(timeout=60)      # loaded-box budget, matches the barrier
                 except subprocess.TimeoutExpired:
                     p.kill()
                     spawn_ok = False

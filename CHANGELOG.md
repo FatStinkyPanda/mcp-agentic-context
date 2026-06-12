@@ -1,5 +1,51 @@
 # Changelog
 
+## v2.3.0 (2026-06-12)
+
+The update-era release: installed copies keep themselves current, and the
+GitHub-native work lifecycle is complete — every feature in this release was
+itself built THROUGH that lifecycle (issues #1, #3, #6: label-CAS checkout ->
+branch -> submit -> auto-merge behind required checks -> land).
+
+- SELF-UPDATE SYSTEM: `mcp update` downloads the latest GitHub release, backs
+  up the install, overlays the payload (manifest-tracked upstream deletions),
+  and requires the NEW engine to pass its own selftest in a throwaway store —
+  failures roll back automatically and preserve the broken payload. `update
+  --check/--status` (cached 24h, gh CLI or anonymous API, silent offline).
+  Session-start commands and the collab_status MCP tool print a one-line
+  [UPDATE] notice so AI agents see releases where they already look.
+  AUTO-UPDATE IS ENABLED BY DEFAULT (`update --disable-auto` to opt out):
+  the notice authorizes agents to apply updates unprompted; when disabled it
+  tells them to ask first. Junction installs update the canonical target;
+  MCP git hooks are refreshed; the two newest backups are retained.
+- CROSS-MACHINE CLAIM ARBITRATION: `work start` atomically removes the
+  issue's `state:available` label — GitHub's one-winner primitive — so
+  exactly one machine wins a checkout on a shared login; `work verify`
+  self-drops lost checkouts (run at loop start and before pushing).
+- PR LANDING PATH: `work submit` pushes the issue branch, opens/adopts THE
+  pull request (Closes #N) and arms auto-merge behind the required checks;
+  `work land` finalizes merged PRs, heals behind ones, and carries a
+  CONTENT-BASED merge-race guard (born from a real lost-commit incident:
+  auto-merge fired on an old head concurrently with a fresh push).
+- FLEET SELF-ORGANIZATION: `work next [--start]` picks the best
+  non-conflicting ready issue — impact-closure overlap vs active checkouts,
+  priority, blast radius, per-agent decorrelation — never auto-picking
+  overlapping work.
+- MACHINE-PARSABLE ISSUES: the agent-task issue form (auto-labels
+  `state:available`) + shared parse_issue_form (template<->parser contract
+  pinned by CI); form paths drive claims, radar, and impact reports; OPEN
+  `Blocked by` dependencies refuse checkout before the CAS.
+- SHARED GH TRANSPORT: team issue list served from a 45s-TTL cache (one
+  lease-elected refresher, stale-while-revalidate) and a SHARED rate-limit
+  penalty gate — a 403/429 backs the whole fleet off with jitter.
+- `collab github-setup [--apply]` provisions labels, seeding, the
+  master-gate ruleset, and allow_auto_merge; refuses on check-context drift.
+- Hardening from production dogfood: engine-grade retry budgets for
+  transient Windows denials (loaded-runner sized), slow/nonzero
+  post-checkout-hook tolerance in branch creation, gated-push timeouts,
+  issue-impact workflow concurrency (queue, never cancel: one label batch
+  emits two events). Selftest 60 checks; suite 150 tests.
+
 ## v2.2.0 (2026-06-12)
 
 The 100-concurrent-agent release: multi-agent collaboration is FIRST-CLASS —

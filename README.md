@@ -3,22 +3,23 @@
 > **AI Agent Enhancement & Unlimited Context Package** - 75 Scripts | 76 Commands | 6 Git Hooks | Offline-First Core
 
 [![CI](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml/badge.svg)](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.2.0-blue)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
+[![Release](https://img.shields.io/badge/release-v2.3.0-blue)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
 
-**Latest release: [v2.2.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)** -
-the 100-concurrent-agent release: multi-agent collaboration is first-class and GitHub-native.
-GitHub issues are checked out like leases with an ATOMIC cross-machine claim, landed through
-auto-merged pull requests behind required CI checks, and every collaboration primitive (fenced
-leases, claims, journal, mailboxes, presence) is atomically safe with many agents on one device
-or many — proven by a multi-process swarm harness that runs on every commit and a nightly
-100-agent soak. One command seats a new agent (`collab join`), one command provisions a repo
-(`collab github-setup`). All on top of the v2.0 line: multi-language semantic search (25+
-languages), incremental auto-fresh indexing, a warm daemon, a native Model Context Protocol
-server for Claude Code/Cursor/Codex, and project-scoped memory.
+**Latest release: [v2.3.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)** -
+the update-era release: installed copies now keep themselves current (`mcp update` — backup,
+self-verify, auto-rollback; agents are notified at session start, auto-update enabled by
+default), and the GitHub-native work lifecycle is complete — issues checked out with an
+ATOMIC cross-machine claim, fleet self-assignment via `work next`, and landing through
+auto-merged pull requests behind required CI checks. Every feature in v2.3.0 was itself
+built through that lifecycle. On top of the v2.2 scale tier: 100-concurrent-agent-safe
+fenced primitives proven by a per-commit multi-process swarm and a nightly 100-agent soak,
+worktree seats, one-command repo provisioning — and the v2.0 line: multi-language semantic
+search (25+ languages), incremental auto-fresh indexing, a warm daemon, a native Model
+Context Protocol server for Claude Code/Cursor/Codex, and project-scoped memory.
 Full details in the [CHANGELOG](CHANGELOG.md).
 
 MCP Agentic Context is a drop-in AI agent enhancement system that installs into any project and gives every AI agent working on it a shared set of tools, memory, code analysis, security scanning, autonomous development workflows, and enforced quality gates. 
