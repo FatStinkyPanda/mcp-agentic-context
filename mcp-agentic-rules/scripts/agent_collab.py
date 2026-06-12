@@ -766,7 +766,7 @@ def _file_fake_gh(state_path: Path, gh_args):
         return _fake_gh_apply(state, gh_args)
     lock = state_path.with_name(state_path.name + ".lock")
     acquired = False
-    for _ in range(60):
+    for _ in range(200):
         try:
             os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
             acquired = True
@@ -783,7 +783,12 @@ def _file_fake_gh(state_path: Path, gh_args):
                     continue
             except OSError:
                 pass
-            time.sleep(0.025)
+            time.sleep(random.uniform(0.005, 0.03))
+        except PermissionError:
+            # NTFS delete-pending: a holder is mid-unlink of the lock name —
+            # O_EXCL create raises PermissionError (not FileExistsError) in
+            # that window. It means BUSY, never broken: jittered retry.
+            time.sleep(random.uniform(0.005, 0.03))
     if not acquired:
         return False, "fake gh lock wedged at %s" % lock
     try:
