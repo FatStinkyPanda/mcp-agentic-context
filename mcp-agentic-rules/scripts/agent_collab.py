@@ -1338,8 +1338,10 @@ def work_submit(project: str, issue, who: str, draft: bool = False, runner=None)
         have = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
                               capture_output=True, text=True, timeout=15)
         if have.returncode == 0:
+            # generous timeout: pre-push hooks legitimately run the FULL E2E
+            # gate (selftest + suite + swarm + security ≈ minutes)
             pushed = subprocess.run(["git", "push", "-u", "origin", branch],
-                                    capture_output=True, text=True, timeout=120)
+                                    capture_output=True, text=True, timeout=900)
             if pushed.returncode != 0:
                 return False, "git push failed: %s" % (pushed.stderr or pushed.stdout).strip()
     except Exception as e:
