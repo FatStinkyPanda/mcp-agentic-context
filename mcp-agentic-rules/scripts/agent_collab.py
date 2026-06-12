@@ -1408,8 +1408,11 @@ def work_land(project: str, issue, who: str, runner=None):
         head = view.get("headRefName") or rec.get("branch", "")
         # RACE GUARD (observed live on PR #4): auto-merge can fire on an OLDER
         # head concurrently with a fresh push — the late commits silently miss
-        # the merge. Never finalize (or delete branches) while local commits
-        # are absent from the merged tree.
+        # the merge. Never finalize (or delete branches) while branch CONTENT
+        # is absent from the merged tree. Content-based, not ancestry-based:
+        # squash merges never make branch commits ancestors, so the check is
+        # "do the merged versions of the files THIS BRANCH touched match the
+        # branch tip" (the ancestry version false-positived landing PR #5).
         local_branch = rec.get("branch", "")
         merged_oid = (view.get("mergeCommit") or {}).get("oid", "")
         if local_branch and merged_oid:
@@ -1422,16 +1425,25 @@ def work_land(project: str, issue, who: str, runner=None):
                                       capture_output=True, timeout=15).returncode != 0:
                         subprocess.run(["git", "fetch", "origin", merged_oid],
                                        capture_output=True, timeout=60)
-                    missing = subprocess.run(
-                        ["git", "log", "--oneline", "%s..%s" % (merged_oid, local_branch)],
+                    base = subprocess.run(
+                        ["git", "merge-base", merged_oid, local_branch],
                         capture_output=True, text=True, timeout=15).stdout.strip()
-                    if missing:
+                    branch_files = subprocess.run(
+                        ["git", "diff", "--name-only", base, local_branch],
+                        capture_output=True, text=True, timeout=15
+                    ).stdout.split() if base else []
+                    divergent = subprocess.run(
+                        ["git", "diff", "--name-only", merged_oid, local_branch, "--"]
+                        + branch_files, capture_output=True, text=True,
+                        timeout=15).stdout.strip() if branch_files else ""
+                    if divergent:
                         journal_log(project, who, "work.merge_race",
                                     {"issue": issue, "pr": pr,
-                                     "missing": missing.splitlines()[:5]})
-                        return False, ("PR #%d merged WITHOUT your latest local commit(s):"
-                                       "\n%s\ncherry-pick them onto a fresh branch and "
-                                       "submit again — nothing was finalized" % (pr, missing))
+                                     "divergent": divergent.splitlines()[:8]})
+                        return False, ("PR #%d merged WITHOUT your latest changes to:\n%s\n"
+                                       "cherry-pick your branch onto a fresh branch and "
+                                       "submit again — nothing was finalized"
+                                       % (pr, divergent))
             except Exception:
                 pass        # the guard is best-effort; probes must never block landing
         if head:
