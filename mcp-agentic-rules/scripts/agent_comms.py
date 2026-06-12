@@ -191,13 +191,18 @@ def listen_for_messages(identity: str = None):
             os.replace(f, claimed)
         except (FileNotFoundError, PermissionError, OSError):
             continue            # another consumer won, or a transient Windows lock
-        try:
-            msg = json.loads(claimed.read_text(encoding="utf-8"))
-        except Exception:
-            try:
-                claimed.unlink()
-            except OSError:
-                pass
+        msg, corrupt = _read_claimed(claimed)
+        if msg is None:
+            if corrupt:         # genuinely unparseable — poison mail, discard
+                try:
+                    claimed.unlink()
+                except OSError:
+                    pass
+            else:               # transient read failure — NEVER destroy unread
+                try:            # mail; restore it for the next poll
+                    os.replace(claimed, f)
+                except OSError:
+                    pass
             continue
         if f.parent == mailbox and msg.get("to") not in (None, me):
             # legacy prefix-glob caught someone else's mail — restore untouched
@@ -213,10 +218,28 @@ def listen_for_messages(identity: str = None):
             pass
     return messages
 
+
+def _read_claimed(claimed: Path):
+    """Read a just-claimed message. Returns (msg_or_None, corrupt). Transient
+    Windows denials (AV/indexer touching the freshly renamed file) are retried
+    and reported as NON-corrupt so callers restore the mail instead of
+    destroying it; only a real parse failure is corrupt."""
+    for attempt in range(5):
+        try:
+            return json.loads(claimed.read_text(encoding="utf-8")), False
+        except PermissionError:
+            time.sleep(0.005 * (attempt + 1))
+        except (ValueError, UnicodeDecodeError):
+            return None, True
+        except OSError:
+            return None, False
+    return None, False
+
 def _claim_file(f: Path):
     """Claim-by-rename consumption: exactly one concurrent consumer gets the
     message. The destination embeds pid+random because deterministic rename
     destinations are NOT a CAS on Windows (two renames can both 'succeed').
+    Transient read failures restore the message instead of destroying it.
     Returns the parsed payload or None."""
     claimed = f.with_name("%s.claimed.%d.%s"
                           % (f.name, os.getpid(), os.urandom(3).hex()))
@@ -224,10 +247,13 @@ def _claim_file(f: Path):
         os.replace(f, claimed)
     except (FileNotFoundError, PermissionError, OSError):
         return None
-    try:
-        msg = json.loads(claimed.read_text(encoding="utf-8"))
-    except Exception:
-        msg = None
+    msg, corrupt = _read_claimed(claimed)
+    if msg is None and not corrupt:
+        try:
+            os.replace(claimed, f)     # transient — back into the inbox
+        except OSError:
+            pass
+        return None
     try:
         claimed.unlink()
     except OSError:

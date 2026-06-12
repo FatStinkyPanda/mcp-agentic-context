@@ -1779,6 +1779,9 @@ def selftest():
             bucket.extend(agent_comms.listen_for_messages(identity="mt-c2"))
         t1, t2 = threading.Thread(target=_consume), threading.Thread(target=_consume)
         t1.start(); t2.start(); t1.join(); t2.join()
+        # transiently-denied reads (AV/indexer races) are restored, not lost —
+        # one redelivery poll picks them up; nothing is ever duplicated
+        bucket.extend(agent_comms.listen_for_messages(identity="mt-c2"))
         check("mailbox: concurrent consumers see each message exactly once",
               sorted(m["content"]["text"] for m in bucket) == ["m%d" % i for i in range(6)])
 
