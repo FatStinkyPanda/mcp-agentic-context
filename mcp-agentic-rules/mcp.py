@@ -195,6 +195,14 @@ CI/CD:
     github-action               Generate workflow
     pipeline [--gitlab]         Generate pipeline
 
+Multi-Agent Collaboration:
+    collab status               Agents + leases + claims + journal in one view
+    collab lease acquire <res>  Exclusive TTL'd lease (editor/build/git-commit/...)
+    collab lease release|renew|break|status <res>
+    collab claim add <id> <pattern>  Advisory work-area ownership
+    collab journal log <event> [--data JSON] | tail [N]
+    comms status|send|listen    Presence + agent-to-agent messages
+
 Automation:
     watch [path]                Live index updates
     autocontext [--budget N]    Auto-load context
@@ -238,6 +246,7 @@ COMMANDS = {
     "cybersec": "cybersec",
     "nsync": "nsync",
     "comms": "agent_comms",
+    "collab": "agent_collab",
     "model": "model_manager",
     'find': 'finder',
     'errors': 'errors',
