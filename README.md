@@ -380,7 +380,7 @@ python mcp-agentic-rules/mcp.py collab journal tail 20
 
 # Onboarding an additional agent? It runs:
 python mcp-agentic-rules/mcp.py collab onboard     # prints the full join-the-team procedure
-python mcp-agentic-rules/mcp.py collab selftest    # 41-check engine verification (throwaway store)
+python mcp-agentic-rules/mcp.py collab selftest    # 45-check engine verification (throwaway store)
 
 # PROVE the concurrency story: N real OS processes hammering one store —
 # lease mutual exclusion, fencing under forced expiry, journal exactly-once,
@@ -410,11 +410,15 @@ its lease is structurally unable to pass `lease valid` before a destructive act.
 state self-heals: a janitor (elected via its own lease) reaps dead presence, orphaned
 claims, abandoned checkouts, and stray temp files, bounded per pass.
 
-**GitHub-native checkout (`collab work`):** `work start` assigns the issue, labels it
-`in-progress` + `agent:<callsign>`, creates the matching claim (file paths extracted from the
-issue body; issue URL in the note), records the checkout in the store, and journals
-`work.start` — `collab status` then shows every agent's checked-out issues, and a CONFLICT
-RADAR warns when two checkouts' path sets intersect. Two GitHub Actions complete the loop:
+**GitHub-native checkout (`collab work`):** `work start` first wins an ATOMIC cross-machine
+claim — removing the issue's `state:available` label is GitHub's one-winner primitive, so
+exactly one machine checks an issue out even when every agent shares one GitHub login —
+then assigns the issue, labels it `in-progress` + `agent:<callsign>`, creates the matching
+claim (file paths extracted from the issue body; issue URL in the note), records the
+checkout in the store, and journals `work.start`. `work verify` re-confirms a checkout at
+loop start / before pushing and self-drops lost ones (two machines can never finish the
+same issue); `work drop` returns the label. `collab status` shows every agent's checked-out
+issues, and a CONFLICT RADAR warns when two checkouts' path sets intersect. Two GitHub Actions complete the loop:
 `agent-issue-impact` fires when an issue is assigned or labeled `in-progress` and posts an
 auto-updated comment with the impact of the files the issue mentions (importers, transitive
 dependents, affected tests — computed by this package's own `impact` engine) plus the overlap

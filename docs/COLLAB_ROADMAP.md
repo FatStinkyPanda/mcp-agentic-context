@@ -43,11 +43,19 @@ reused); swarm invariants proven at 16 processes per commit (CI), 100 nightly.
   `REQUIRED_CHECK_CONTEXTS`); `collab-soak.yml`: nightly 100-agent hammer with
   auto-filed `swarm-regression` issues.
 
-Remaining from the scale blueprint (follow-up order): GitHub label-removal CAS + `work
-verify` (cross-machine atomic claim arbitration), `work submit`/`work land` PR landing path,
-`collab github-setup` (labels + master ruleset requiring the CI contexts), issue forms +
-shared parser, shared gh issue cache + rate-limit penalty gate, reconciler workflow
-(seed/dedupe), `work next` conflict-aware auto-assignment.
+**Cross-machine claim arbitration — SHIPPED 2026-06-12:** `work start` atomically removes
+the `state:available` label (GitHub's one-winner primitive — the second DELETE gets 404):
+exactly one machine wins a checkout even though every agent shares one GitHub login. Lost
+races leak nothing locally; repos without seeded labels degrade to advisory-local with a
+post-label verification (deterministic lexicographic tie-break, exactly one side
+self-drops). `work verify <issue#>` re-confirms a checkout at loop start / before pushing
+and SELF-DROPS lost checkouts (journal `work.lost_race`) so two machines never finish the
+same issue; `work drop` returns the label. Selftest 45/45.
+
+Remaining from the scale blueprint (follow-up order): `work submit`/`work land` PR landing
+path, `collab github-setup` (seed `state:available` + labels + master ruleset requiring the
+CI contexts), issue forms + shared parser, shared gh issue cache + rate-limit penalty gate,
+reconciler workflow (seed/dedupe), `work next` conflict-aware auto-assignment.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):

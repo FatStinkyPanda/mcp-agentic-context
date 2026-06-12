@@ -37,9 +37,12 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
   claim drop <id>
   claim list
   work list                           (open GitHub issues + who has them checked out)
-  work start <issue#> [--branch]      (check OUT an issue: assign + label, claim, journal)
+  work start <issue#> [--branch]      (check OUT an issue: cross-machine label CAS +
+                                       assign + label, claim, journal)
+  work verify <issue#>                (still mine on GitHub? lost checkouts self-drop —
+                                       run at loop start and BEFORE pushing)
   work done <issue#> [--pr URL]       (close it — or link the PR — and release everything)
-  work drop <issue#>                  (un-checkout without finishing)
+  work drop <issue#>                  (un-checkout; returns the issue to state:available)
   work tick <issue#> <item#>          (tick task-list checkbox N inside the issue body)
   journal log <event> [--data JSON]
   journal tail [N]
@@ -729,6 +732,23 @@ def _fake_gh_apply(state: dict, gh_args):
              for k, v in issues.items() if v.get("state", "open") == "open"])
     if gh_args[:1] == ["label"]:
         return True, ""
+    if gh_args[:1] == ["api"]:
+        # only the label-CAS is modeled: api -X DELETE repos/.../issues/N/labels/LABEL
+        method = gh_args[gh_args.index("-X") + 1] if "-X" in gh_args else "GET"
+        m = re.search(r"/issues/(\d+)/labels/(.+)$", gh_args[-1])
+        if method == "DELETE" and m:
+            k, label = m.group(1), m.group(2).replace("%3A", ":").replace("%3a", ":")
+            iss = issues.get(k)
+            if not iss:
+                return False, "HTTP 404: Not Found"
+            if str(state.get("steal_available", "")) == k and label == "state:available":
+                iss["labels"] = [x for x in iss.get("labels", []) if x != label]
+                return False, "HTTP 404: Label does not exist"   # raced: someone else won
+            if label in iss.get("labels", []):
+                iss["labels"] = [x for x in iss["labels"] if x != label]
+                return True, json.dumps([{"name": x} for x in iss["labels"]])
+            return False, "HTTP 404: Label does not exist"
+        return False, "fake gh: unhandled api %s" % gh_args[-1]
     return False, "fake gh: unhandled %s" % " ".join(gh_args[:3])
 
 
@@ -907,6 +927,25 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
         return False, ("issue #%d already carries the in-progress label on GitHub — checked "
                        "out by %s (possibly on another machine). Pick different work."
                        % (issue, holder))
+    # Cross-machine atomic claim: removing the state:available label is GitHub's
+    # one-winner primitive (the second DELETE gets 404). Local records arbitrate
+    # same-store races; THIS arbitrates agents on different machines sharing one
+    # GitHub identity. Repos without seeded labels degrade to advisory-local.
+    gh_claim = {"method": "advisory-local"}
+    if "state:available" in fetched_labels:
+        cas_ok, cas_out = run(["api", "-X", "DELETE",
+                               "repos/{owner}/{repo}/issues/%d/labels/state%%3Aavailable"
+                               % issue])
+        if cas_ok:
+            gh_claim = {"method": "label-cas", "claimed_at": _now()}
+        else:
+            err_l = str(cas_out).lower()
+            if "404" in err_l or "not found" in err_l or "does not exist" in err_l:
+                return False, ("lost the cross-machine claim race for issue #%d — "
+                               "state:available was taken first. Pick different work."
+                               % issue)
+            return False, ("gh claim failed for issue #%d (cannot verify the cross-machine "
+                           "claim — not checking out): %s" % (issue, cas_out))
     title, url = meta.get("title", ""), meta.get("url", "")
     paths = extract_paths(meta.get("body", ""))[:8]
     pattern = ",".join(paths) if paths else url
@@ -917,7 +956,7 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
                        % (issue, (c_info or {}).get("owner")))
     pending = {"issue": issue, "title": title, "url": url, "owner": who, "workdir": cwd,
                "session": SESSION, "paths": paths, "branch": "", "phase": "pending",
-               "started": _now(), "started_ts": time.ctime(), "v": 2}
+               "gh_claim": gh_claim, "started": _now(), "started_ts": time.ctime(), "v": 2}
     try:
         with open(wpath, "x", encoding="utf-8") as f:      # O_EXCL: one checkout winner
             json.dump(pending, f, indent=2)
@@ -946,6 +985,21 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
             journal_log(project, who, "work.rolled_back",
                         {"issue": issue, "reason": str(lab_err)[:200]})
             return False, "gh labeling failed — checkout rolled back: %s" % lab_err
+    if gh_claim["method"] == "advisory-local":
+        # No CAS protected this checkout — verify nobody else labeled in the
+        # same window. Deterministic tie-break: the lexicographically-smaller
+        # agent label keeps the issue, so exactly one side self-drops.
+        ok_v, meta_v = _gh_json(["issue", "view", str(issue), "--json", "labels"], runner=run)
+        if ok_v:
+            labs_v = {x.get("name", "") for x in meta_v.get("labels", [])}
+            foreign_v = sorted(x for x in labs_v
+                               if x.startswith("agent:") and x != "agent:" + who)
+            if foreign_v and foreign_v[0] < "agent:" + who:
+                _work_self_drop(project, issue, who, run)
+                journal_log(project, who, "work.lost_race",
+                            {"issue": issue, "winner": foreign_v[0]})
+                return False, ("lost the checkout race for issue #%d to %s (advisory "
+                               "verification) — pick different work" % (issue, foreign_v[0]))
     branch, branch_err = "", ""
     if make_branch:
         branch = "agent/%s/issue-%d" % (who, issue)
@@ -989,6 +1043,41 @@ def _work_retire(project: str, issue: int, who: str):
     return True
 
 
+def _work_self_drop(project: str, issue: int, who: str, run):
+    """Converge after a lost race: remove OUR labels, drop OUR claim + record."""
+    run(["issue", "edit", str(issue), "--remove-label", "in-progress,agent:" + who])
+    claim_drop(project, "issue-%d" % issue, who)
+    _work_retire(project, issue, who)
+
+
+def work_verify(project: str, issue, who: str, runner=None):
+    """Re-confirm OUR checkout is intact on GitHub. Run it at loop start and
+    BEFORE pushing work for the issue: a lost checkout self-drops locally so
+    the team converges instead of two machines finishing the same issue.
+    Returns (ok, message); gh-unavailable degrades to advisory-intact."""
+    issue = int(issue)
+    run = runner or GH_RUNNER
+    rec = _read_json(work_path(project, issue))
+    if not rec or rec.get("owner") != who:
+        return False, ("no local checkout of issue #%d by %s — nothing to verify"
+                       % (issue, who))
+    ok, meta = _gh_json(["issue", "view", str(issue), "--json", "labels"], runner=run)
+    if not ok:
+        return True, ("[ADVISORY] gh unavailable — cannot verify issue #%d against "
+                      "GitHub; local checkout intact" % issue)
+    labs = {x.get("name", "") for x in meta.get("labels", [])}
+    foreign = sorted(x for x in labs if x.startswith("agent:") and x != "agent:" + who)
+    if ("agent:" + who) in labs and not foreign:
+        return True, "issue #%d checkout intact (labels verified)" % issue
+    _work_self_drop(project, issue, who, run)
+    journal_log(project, who, "work.lost_race",
+                {"issue": issue, "winner": foreign[0] if foreign else "(labels gone)"})
+    return False, ("checkout of issue #%d was LOST (%s) — local state self-dropped; "
+                   "do NOT push work for this issue"
+                   % (issue, ("now held by " + foreign[0]) if foreign
+                      else "our labels are gone"))
+
+
 def work_done(project: str, issue, who: str, pr: str = "", runner=None):
     """Finish a checkout: close the issue (or link the PR and leave it open for
     review), drop the claim + record, journal work.done. Returns (ok, message)."""
@@ -1029,6 +1118,8 @@ def work_drop(project: str, issue, who: str, runner=None):
     owner = (rec or {}).get("owner", who)
     run(["issue", "edit", str(issue),
          "--remove-label", "in-progress,agent:" + owner])                 # best-effort
+    if (rec or {}).get("gh_claim", {}).get("method") == "label-cas":
+        run(["issue", "edit", str(issue), "--add-label", "state:available"])
     claim_drop(project, "issue-%d" % issue, who)
     _work_retire(project, issue, who)
     journal_log(project, who, "work.drop", {"issue": issue, "owner": owner})
@@ -1379,10 +1470,12 @@ You were told you're an ADDITIONAL AGENT on a team. Do exactly this:
 4. CLAIM before you author: `mcp collab claim add <id> "<path-pattern>" --as <callsign>` —
    and respect existing claims shown in status.
 5. UNITS OF WORK are GitHub issues when the project has a remote: `mcp collab work list`
-   to see what's open and who holds what, `work start <issue#>` to check one out (it
-   assigns + labels the issue and creates your claim), `work done <issue#> [--pr URL]`
-   when finished, `work drop <issue#>` to hand it back. Never start an issue another
-   agent has checked out — status shows checkouts and the conflict radar.
+   to see what's open and who holds what, `work start <issue#>` to check one out (an
+   ATOMIC cross-machine claim via the state:available label, plus assignment + labels +
+   your claim), `work done <issue#> [--pr URL]` when finished, `work drop <issue#>` to
+   hand it back. Run `work verify <issue#>` at loop start and BEFORE pushing — a lost
+   checkout self-drops so two machines never finish the same issue. Never start an
+   issue another agent has checked out — status shows checkouts and the conflict radar.
 6. JOURNAL everything material: intents before, results after —
    `mcp collab journal log intent --data '{"text": "..."}'`. Tail it at EVERY loop start.
 7. LANDING WORK: every commit is E2E-gated (hooks + CI). Small teams: acquire the
@@ -1670,6 +1763,42 @@ def selftest():
         check("work degrades clearly without gh",
               not o_ok and "gh" in o_msg.lower() and not work_path(P, 7).exists()
               and "issue-7" not in {c["id"] for c in claims_all(P)})
+
+        # cross-machine claim arbitration (label-removal CAS) + work verify
+        state["issues"]["13"] = {"title": "CAS probe", "url": "https://github.com/x/y/issues/13",
+                                 "body": "Edits src/cas.py",
+                                 "labels": ["state:available"], "state": "open"}
+        cas_ok, _ = work_start(P, 13, A, runner=fake)
+        rec13 = _read_json(work_path(P, 13))
+        check("label-removal CAS wins the cross-machine claim + records the method",
+              cas_ok and rec13 is not None
+              and rec13.get("gh_claim", {}).get("method") == "label-cas"
+              and "state:available" not in state["issues"]["13"]["labels"])
+        iv_ok, _ = work_verify(P, 13, A, runner=fake)
+        state["issues"]["13"]["labels"].append("agent:zz")
+        lv_ok, _ = work_verify(P, 13, A, runner=fake)
+        check("work verify: intact passes; a foreign takeover self-drops cleanly",
+              iv_ok and not lv_ok and not work_path(P, 13).exists()
+              and "issue-13" not in {c["id"] for c in claims_all(P)}
+              and any(e["event"] == "work.lost_race" for e in journal_tail(P, 10)))
+        state["issues"]["14"] = {"title": "Steal probe", "url": "https://github.com/x/y/issues/14",
+                                 "body": "Edits src/steal.py",
+                                 "labels": ["state:available"], "state": "open"}
+        state["steal_available"] = "14"
+        st_ok, st_msg = work_start(P, 14, A, runner=fake)
+        state.pop("steal_available")
+        check("a stolen state:available is a clean cross-machine loss (no local leak)",
+              not st_ok and "cross-machine" in st_msg
+              and not work_path(P, 14).exists()
+              and "issue-14" not in {c["id"] for c in claims_all(P)})
+        state["issues"]["16"] = {"title": "Drop probe", "url": "https://github.com/x/y/issues/16",
+                                 "body": "Edits src/drop.py",
+                                 "labels": ["state:available"], "state": "open"}
+        d16_ok, _ = work_start(P, 16, A, runner=fake)
+        dr16_ok, _ = work_drop(P, 16, A, runner=fake)
+        check("work drop returns the issue to state:available",
+              d16_ok and dr16_ok
+              and "state:available" in state["issues"]["16"]["labels"])
 
         # ---- seats ----
         wd1 = Path(tempfile.mkdtemp(prefix="seat1-", dir=store))
@@ -2013,11 +2142,13 @@ def main():
                 ok, out = work_done(project, args[2], who, pr)
             elif verb == "drop" and len(args) >= 3:
                 ok, out = work_drop(project, args[2], who)
+            elif verb == "verify" and len(args) >= 3:
+                ok, out = work_verify(project, args[2], who)
             elif verb == "tick" and len(args) >= 4:
                 ok, out = work_tick(project, args[2], args[3], who)
             else:
                 print("[FAIL] work list | start <issue#> [--branch] | done <issue#> "
-                      "[--pr URL] | drop <issue#> | tick <issue#> <item#>")
+                      "[--pr URL] | drop <issue#> | verify <issue#> | tick <issue#> <item#>")
                 return 1
         except ValueError:
             print("[FAIL] issue/item must be numbers")

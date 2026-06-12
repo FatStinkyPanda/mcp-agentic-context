@@ -266,15 +266,18 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "collab_work",
         "description": "MULTI-AGENT teams: GitHub issues checked out like leases (gh-backed). "
-                       "verb=list (open issues + who holds what) | start (assign + label the "
-                       "issue, create the matching claim carrying the issue URL, journal "
-                       "work.start, optional branch) | done (close it or link a PR, release "
-                       "everything) | drop (un-checkout) | tick (check off task-list item N "
-                       "in the issue body). Degrades with a clear error when gh is absent.",
+                       "verb=list (open issues + who holds what) | start (ATOMIC cross-machine "
+                       "claim via the state:available label CAS + assign + label + the matching "
+                       "claim + journal, optional branch) | verify (still mine on GitHub? lost "
+                       "checkouts self-drop — call at loop start and before pushing) | done "
+                       "(close it or link a PR, release everything) | drop (un-checkout, returns "
+                       "state:available) | tick (check off task-list item N in the issue body). "
+                       "Degrades with a clear error when gh is absent.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "verb": {"type": "string", "description": "list | start | done | drop | tick"},
+                "verb": {"type": "string",
+                         "description": "list | start | verify | done | drop | tick"},
                 "issue": {"type": "integer", "description": "Issue number (every verb except list)"},
                 "item": {"type": "integer", "description": "tick: 1-based checkbox index"},
                 "pr": {"type": "string", "description": "done: PR URL to link instead of closing"},
@@ -569,6 +572,8 @@ class MCPServer:
         try:
             if verb == "start":
                 ok, out = ac.work_start(project, issue, who, bool(args.get("branch")))
+            elif verb == "verify":
+                ok, out = ac.work_verify(project, issue, who)
             elif verb == "done":
                 ok, out = ac.work_done(project, issue, who, str(args.get("pr") or ""))
             elif verb == "drop":
@@ -576,7 +581,7 @@ class MCPServer:
             elif verb == "tick":
                 ok, out = ac.work_tick(project, issue, int(args.get("item", 0)), who)
             else:
-                return "unknown verb '%s' (list|start|done|drop|tick)" % verb
+                return "unknown verb '%s' (list|start|verify|done|drop|tick)" % verb
         except (TypeError, ValueError):
             return "issue/item must be numbers"
         return ("OK — " if ok else "FAIL — ") + out

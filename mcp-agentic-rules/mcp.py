@@ -204,10 +204,11 @@ Multi-Agent Collaboration:
     collab claim add <id> <pattern>  Advisory work-area ownership
     collab work list            Open GitHub issues + who has them checked out
     collab work start <issue#> [--branch]   Check OUT an issue (assign+label+claim+journal)
+    collab work verify <issue#> Still mine on GitHub? Lost checkouts self-drop
     collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
-    collab selftest             41-check engine verification (throwaway store)
+    collab selftest             45-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 
