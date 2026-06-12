@@ -77,8 +77,16 @@ claim, the conflict radar, and the auto-impact report (free text still falls bac
 extraction); OPEN `Blocked by` dependencies REFUSE `work start` (checked before the label
 CAS so a refusal never consumes `state:available`; `--force` overrides). Selftest 54/54.
 
-Remaining from the scale blueprint (follow-up order): shared gh issue cache + rate-limit
-penalty gate, reconciler workflow (seed/dedupe), `work next` conflict-aware auto-assignment.
+**Shared gh transport — SHIPPED 2026-06-12 (issue #1, landed via the system's own PR
+path):** `issues_cached()` serves the team's issue list from a 45s-TTL shared cache (one
+refresher elected via the `gh-issues-fetch` lease; everyone else gets stale-while-
+revalidate) — N agents polling for work cost ~one gh call per TTL, not N. `_gh_gated()`
+puts every transport call behind a SHARED penalty gate: any 403/429 trips a jittered
+back-off window for the whole team (no stampede on a shared token); corrupt/missing gate
+files fail OPEN. `work list` rides the cache. Selftest 57/57.
+
+Remaining from the scale blueprint (follow-up order): reconciler workflow (issue #2),
+`work next` conflict-aware auto-assignment (issue #3, blocked by #1 — now unblocked).
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):

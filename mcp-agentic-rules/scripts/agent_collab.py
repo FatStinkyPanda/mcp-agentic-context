@@ -734,9 +734,12 @@ def _fake_gh_apply(state: dict, gh_args):
             gh_args[gh_args.index("--body") + 1])
         return True, ""
     if head == ["issue", "list"]:
+        if state.get("rate_limit"):
+            return False, "HTTP 403: API rate limit exceeded"
         return True, json.dumps(
             [{"number": int(k), "title": v.get("title", ""), "url": v.get("url", ""),
-              "assignees": [], "labels": [{"name": x} for x in v.get("labels", [])]}
+              "body": v.get("body", ""), "assignees": [],
+              "labels": [{"name": x} for x in v.get("labels", [])]}
              for k, v in issues.items() if v.get("state", "open") == "open"])
     if gh_args[:1] == ["label"]:
         if gh_args[1:2] == ["create"] and len(gh_args) > 2:
@@ -917,6 +920,85 @@ def _gh_json(gh_args, runner=None):
         return True, json.loads(out)
     except Exception as e:
         return False, "unparseable gh output: %s" % e
+
+
+# ── gh transport: shared issue cache + rate-limit penalty gate ───────────────────────────────
+GH_CACHE_TTL = 45.0          # issue lists younger than this are served without a gh call
+PENALTY_MIN = 60.0           # minimum shared back-off after a 403/429
+
+
+def _gh_cache_dir(project: str) -> Path:
+    d = collab_dir(project) / "gh-cache"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _penalty_left(project: str) -> float:
+    """Seconds of shared rate-limit penalty remaining. Corrupt/missing budget
+    files fail OPEN (0.0) — the gate must never lock agents out by accident."""
+    b = _read_json(_gh_cache_dir(project) / "budget.json")
+    if not b:
+        return 0.0
+    return max(0.0, float(b.get("penalty_until", 0)) - _now())
+
+
+def _penalty_trip(project: str, who: str, err_text):
+    m = re.search(r"retry-after[:\s]+(\d+)", str(err_text), re.I)
+    retry = float(m.group(1)) if m else 0.0
+    until = _now() + max(retry, PENALTY_MIN) + random.uniform(0, 30)   # jittered restart
+    atomic_write_json(_gh_cache_dir(project) / "budget.json",
+                      {"penalty_until": until, "tripped_by": who, "at": _now()})
+    journal_log(project, who, "gh.rate_limited", {"until_in": int(until - _now())})
+
+
+def _gh_gated(project: str, who: str, gh_args, runner=None):
+    """A gh call behind the SHARED penalty gate: 100 agents share one token, so
+    when GitHub answers 403/429 to anyone, everyone fails fast (no stampede)
+    until the jittered penalty window passes."""
+    left = _penalty_left(project)
+    if left > 0:
+        return False, ("[RATE-LIMITED] gh calls suspended for %ds (shared penalty gate) "
+                       "— serve from cache or retry later" % int(left))
+    ok, out = (runner or GH_RUNNER)(gh_args)
+    if not ok and re.search(r"\b(403|429)\b|rate limit", str(out), re.I):
+        _penalty_trip(project, who, out)
+    return ok, out
+
+
+def issues_cached(project: str, who: str, runner=None, max_age: float = GH_CACHE_TTL):
+    """THE issue list for the team: served from a shared short-TTL cache so N
+    agents polling for work cost ~one gh call per TTL, not N. One refresher is
+    elected via the gh-issues-fetch lease; everyone else serves the cached list
+    (stale-while-revalidate). Returns (ok, issues, note)."""
+    cpath = _gh_cache_dir(project) / "issues.json"
+    cached = _read_json(cpath)
+    age = _now() - cached.get("t", 0) if cached else 1e9
+    if cached and age < max_age:
+        return True, cached.get("issues", []), "(cached %ds ago)" % int(age)
+    got, info = lease_acquire(project, "gh-issues-fetch", who, ttl=30)
+    if not got:
+        if cached:
+            return True, cached.get("issues", []), \
+                "(cached %ds ago — another agent is refreshing)" % int(age)
+        return False, [], "no cache yet and another agent holds the refresh lease — retry"
+    try:
+        ok, out = _gh_gated(project, who,
+                            ["issue", "list", "--state", "open", "--limit", "200",
+                             "--json", "number,title,labels,assignees,url,body"],
+                            runner=runner)
+        if not ok:
+            if cached:
+                return True, cached.get("issues", []), \
+                    "(STALE cache %ds old — refresh failed: %s)" % (int(age), str(out)[:80])
+            return False, [], str(out)
+        try:
+            issues = json.loads(out)
+        except Exception as e:
+            return False, [], "unparseable gh output: %s" % e
+        atomic_write_json(cpath, {"t": _now(), "by": who, "issues": issues})
+        return True, issues, "(fresh)"
+    finally:
+        lease_release(project, "gh-issues-fetch", who, fence=(info or {}).get("fence"))
 
 
 def work_dir(project: str) -> Path:
@@ -1379,13 +1461,14 @@ def work_drop(project: str, issue, who: str, runner=None):
 
 
 def work_list(project: str, who: str, runner=None):
-    """Open issues + who has them checked out locally. Returns (ok, text)."""
-    ok, issues = _gh_json(["issue", "list", "--state", "open", "--limit", "200",
-                           "--json", "number,title,labels,assignees,url"], runner=runner)
+    """Open issues + who has them checked out locally — served through the
+    shared cache (N agents polling for work cost ~one gh call per 45s).
+    Returns (ok, text)."""
+    ok, issues, note = issues_cached(project, who, runner=runner)
     if not ok:
-        return False, issues
+        return False, note
     local = {w["issue"]: w for w in work_all(project)}
-    lines = []
+    lines = ["open issues %s" % note]
     for it in issues:
         n = it.get("number")
         labs = ",".join(lab.get("name", "") for lab in it.get("labels", []))
@@ -2218,6 +2301,39 @@ def selftest():
               fl_ok and claims19.get("issue-19", {}).get("pattern")
               == "src/form.py,docs/form.md")
         work_drop(P, 19, A, runner=fake)
+
+        # ---- shared gh cache + rate-limit penalty gate ----
+        calls = {"list": 0}
+
+        def counting_fake(gh_args):
+            if gh_args[:2] == ["issue", "list"]:
+                calls["list"] += 1
+            return fake(gh_args)
+        c1_ok, c1_issues, c1_note = issues_cached(P, A, runner=counting_fake)
+        c2_ok, c2_issues, c2_note = issues_cached(P, A, runner=counting_fake)
+        check("issue cache: one fetch serves the team within the TTL",
+              c1_ok and c2_ok and calls["list"] == 1
+              and "fresh" in c1_note and "cached" in c2_note
+              and len(c1_issues) == len(c2_issues) > 0)
+        cpath2 = _gh_cache_dir(P) / "issues.json"
+        cdata2 = _read_json(cpath2)
+        cdata2["t"] = _now() - 120
+        atomic_write_json(cpath2, cdata2)
+        lease_acquire(P, "gh-issues-fetch", B, ttl=600)
+        sc_ok, sc_issues, sc_note = issues_cached(P, A, runner=counting_fake)
+        lease_release(P, "gh-issues-fetch", B)
+        check("stale cache served while another agent holds the refresh lease",
+              sc_ok and calls["list"] == 1 and "refreshing" in sc_note
+              and len(sc_issues) > 0)
+        state["rate_limit"] = True
+        rl_ok, _, rl_note = issues_cached(P, A, runner=counting_fake)
+        gg_ok, gg_out = _gh_gated(P, A, ["issue", "list"], runner=counting_fake)
+        state["rate_limit"] = False
+        check("penalty gate: a 403 trips shared fast-fail; stale cache still serves",
+              rl_ok and "STALE" in rl_note
+              and not gg_ok and "RATE-LIMITED" in gg_out
+              and _penalty_left(P) > 0)
+        (_gh_cache_dir(P) / "budget.json").unlink()
 
         # ---- github-setup: dry-run inert, apply idempotent, drift refused ----
         state["issues"]["20"] = {"title": "Unlabeled", "url": "https://github.com/x/y/issues/20",
