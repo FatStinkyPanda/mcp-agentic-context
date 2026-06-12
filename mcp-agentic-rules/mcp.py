@@ -211,7 +211,7 @@ Multi-Agent Collaboration:
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
     collab github-setup [--apply]  Labels + state:available seeding + master ruleset
-    collab selftest             54-check engine verification (throwaway store)
+    collab selftest             57-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 
