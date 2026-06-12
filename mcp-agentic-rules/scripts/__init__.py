@@ -22,7 +22,7 @@ from .utils import (
     Console
 )
 
-__version__ = "2.0.0"
+__version__ = "2.2.0"
 __all__ = [
     'FunctionInfo',
     'ClassInfo',

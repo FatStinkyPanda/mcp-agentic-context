@@ -1,5 +1,63 @@
 # Changelog
 
+## v2.2.0 (2026-06-12)
+
+The 100-concurrent-agent release: multi-agent collaboration is FIRST-CLASS —
+GitHub-native, atomically safe with many agents on one device or many devices,
+and E2E-verified on every commit.
+
+- GITHUB-NATIVE WORK LIFECYCLE: a GitHub issue is the unit of work. `collab
+  work list / start / verify / submit / land / done / drop / tick` — `start`
+  wins an ATOMIC cross-machine claim by removing the `state:available` label
+  (GitHub's one-winner primitive; the losing machine gets 404 and leaks no
+  local state), assigns + labels the issue, creates the matching claim, and
+  journals it. `verify` re-confirms a checkout and SELF-DROPS lost ones so two
+  machines never finish the same issue. `submit` pushes the issue branch,
+  opens (or crash-safely adopts) THE pull request — `Closes #N` — and arms
+  auto-merge behind the required CI checks; `land` finalizes merged PRs
+  (releases everything, deletes the remote branch) and heals behind/unarmed
+  ones. At scale, agents never push the default branch directly.
+- `collab github-setup [--apply]`: one-command repo provisioning — the
+  coordination labels, `state:available` seeding, and the `master-gate`
+  ruleset (PR + required CI contexts, strict up-to-date, no force-push, admin
+  break-glass). REFUSES to apply when the pinned contexts don't match real
+  check runs, so a typo can never hard-block all merging.
+- SAME-DEVICE SEATS: `.mcp/seat.json` binds workdir -> call-sign (create-once
+  O_EXCL); identity resolves env > seat > hostname, so N sessions on one
+  laptop can never silently merge into one hostname identity. `collab seat
+  new <cs>` provisions a git-worktree seat in one command; `collab join` =
+  seat + heartbeat + engine probe + team status. Cross-workdir use of one
+  identity is REFUSED at the lease/claim/work layer.
+- ATOMIC STORE: every write is an O_EXCL create, an atomic temp+rename
+  replace, or a rename-to-unique-tombstone take — readers never see partial
+  JSON; removals verify what they removed and restore on mismatch. LEASES
+  carry monotonic FENCE numbers (sidecar high-water mark survives release,
+  break, and crash); renew is a take-verify-recreate CAS that can never
+  resurrect an expired lease; `lease valid --fence N` proves the incarnation
+  before irreversible acts; corrupt leases recover instead of deadlocking.
+  Per-writer journal segments (identity.pid.ndjson, one O_APPEND syscall per
+  event, merged tails). Janitor GC (lease-elected) reaps stale presence,
+  orphaned claims, abandoned checkouts and strays, bounded per pass. Maildir
+  mailboxes with claim-by-rename exactly-once consumption; transiently
+  unreadable mail is restored, never destroyed.
+- E2E ON EVERY COMMIT: `collab selftest` = 51 checks in a throwaway store
+  (including a real multi-process race smoke); `collab swarmtest` = N real OS
+  processes proving lease mutual exclusion (+ fencing under forced expiry),
+  journal exactly-once, claim/checkout single-winner, and collision detection.
+  Rewritten hooks (pre-commit: E2E gate, never mutates the tree; pre-push:
+  selftest + full suite + swarm + security), CI gates with a 16-process swarm
+  on ubuntu AND windows, and a nightly 100-agent hammer soak that auto-files
+  swarm-regression issues.
+- AUTO-IMPACT WORKFLOWS: issues labeled in-progress and every PR get ONE
+  self-healing upserted comment with importers, transitive dependents,
+  affected tests, and a conflict radar against other in-progress issues. The
+  impact engine now resolves Python relative imports.
+- Windows platform hardening, each discovered by the new gates: two
+  concurrent os.replace calls to one destination can BOTH report success
+  (deterministic rename destinations are not a CAS — all tombstones embed
+  pid+random); NTFS delete-pending makes O_EXCL creates raise PermissionError
+  (treated as busy, never broken); readers retry transient sharing violations.
+
 ## v2.1.0 (2026-06-11)
 
 - NEW `collab` command: same-project multi-agent coordination — exclusive TTL'd
