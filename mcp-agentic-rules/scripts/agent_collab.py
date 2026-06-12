@@ -41,7 +41,12 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
                                        assign + label, claim, journal)
   work verify <issue#>                (still mine on GitHub? lost checkouts self-drop —
                                        run at loop start and BEFORE pushing)
-  work done <issue#> [--pr URL]       (close it — or link the PR — and release everything)
+  work submit <issue#> [--draft]      (push the branch, open/adopt THE PR — Closes #N —
+                                       arm auto-merge: the gated landing path at scale)
+  work land <issue#>                  (finalize a merged PR: release everything + delete
+                                       the remote branch; heals behind/unarmed PRs)
+  work done <issue#> [--pr URL]       (close it — or link the PR — and release everything;
+                                       redirects to `land` when a submitted PR is open)
   work drop <issue#>                  (un-checkout; returns the issue to state:available)
   work tick <issue#> <item#>          (tick task-list checkbox N inside the issue body)
   journal log <event> [--data JSON]
@@ -732,9 +737,51 @@ def _fake_gh_apply(state: dict, gh_args):
              for k, v in issues.items() if v.get("state", "open") == "open"])
     if gh_args[:1] == ["label"]:
         return True, ""
+    if gh_args[:2] == ["pr", "create"]:
+        prs = state.setdefault("prs", {})
+        head = gh_args[gh_args.index("--head") + 1] if "--head" in gh_args else ""
+        if head in prs and prs[head].get("state") == "OPEN":
+            return False, "a pull request for branch %s already exists" % head
+        num = state["next_pr"] = state.get("next_pr", 100) + 1
+        prs[head] = {"number": num, "url": "https://github.com/x/y/pull/%d" % num,
+                     "headRefName": head, "state": "OPEN", "auto": False,
+                     "mergeStateStatus": state.get("pr_status", "CLEAN"),
+                     "title": (gh_args[gh_args.index("--title") + 1]
+                               if "--title" in gh_args else ""),
+                     "body": (gh_args[gh_args.index("--body") + 1]
+                              if "--body" in gh_args else "")}
+        return True, prs[head]["url"]
+    if gh_args[:2] == ["pr", "list"]:
+        prs = state.setdefault("prs", {})
+        head = gh_args[gh_args.index("--head") + 1] if "--head" in gh_args else None
+        sel = [p for p in prs.values() if head is None or p["headRefName"] == head]
+        return True, json.dumps([{"number": p["number"], "url": p["url"],
+                                  "headRefName": p["headRefName"], "state": p["state"]}
+                                 for p in sel])
+    if gh_args[:2] == ["pr", "view"]:
+        for p in state.setdefault("prs", {}).values():
+            if p["number"] == int(gh_args[2]):
+                return True, json.dumps({"number": p["number"], "state": p["state"],
+                                         "mergeStateStatus": p.get("mergeStateStatus", "CLEAN"),
+                                         "headRefName": p["headRefName"], "url": p["url"]})
+        return False, "no pull request found"
+    if gh_args[:2] == ["pr", "merge"]:
+        for p in state.setdefault("prs", {}).values():
+            if p["number"] == int(gh_args[2]):
+                p["auto"] = True
+                if state.get("merge_now"):
+                    p["state"] = "MERGED"
+                return True, ""
+        return False, "no pull request found"
+    if gh_args[:2] == ["pr", "update-branch"]:
+        return True, ""
     if gh_args[:1] == ["api"]:
-        # only the label-CAS is modeled: api -X DELETE repos/.../issues/N/labels/LABEL
+        # modeled: label-CAS DELETE + remote-branch DELETE
         method = gh_args[gh_args.index("-X") + 1] if "-X" in gh_args else "GET"
+        mref = re.search(r"/git/refs/heads/(.+)$", gh_args[-1])
+        if method == "DELETE" and mref:
+            state.setdefault("deleted_refs", []).append(mref.group(1))
+            return True, ""
         m = re.search(r"/issues/(\d+)/labels/(.+)$", gh_args[-1])
         if method == "DELETE" and m:
             k, label = m.group(1), m.group(2).replace("%3A", ":").replace("%3a", ":")
@@ -1083,15 +1130,129 @@ def work_verify(project: str, issue, who: str, runner=None):
                       else "our labels are gone"))
 
 
+def work_submit(project: str, issue, who: str, draft: bool = False, runner=None):
+    """Open (or adopt) THE pull request for a checked-out issue and arm
+    auto-merge: at scale the PR + required CI checks are the landing path —
+    100 agents cannot serialize direct pushes to master. The PR body's
+    `Closes #N` line makes the merge close the issue. Returns (ok, message)."""
+    issue = int(issue)
+    run = runner or GH_RUNNER
+    rec = _read_json(work_path(project, issue))
+    if not rec or rec.get("owner") != who:
+        return False, "issue #%d is not checked out by %s — start it first" % (issue, who)
+    v_ok, v_msg = work_verify(project, issue, who, runner=run)
+    if not v_ok:
+        return False, v_msg
+    branch = rec.get("branch") or ""
+    if not branch:
+        return False, ("no working branch on the record — check out with "
+                       "`work start %d --branch` before submitting" % issue)
+    try:    # push when the branch exists locally (records can carry remote-only branches)
+        have = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
+                              capture_output=True, text=True, timeout=15)
+        if have.returncode == 0:
+            pushed = subprocess.run(["git", "push", "-u", "origin", branch],
+                                    capture_output=True, text=True, timeout=120)
+            if pushed.returncode != 0:
+                return False, "git push failed: %s" % (pushed.stderr or pushed.stdout).strip()
+    except Exception as e:
+        return False, "git push failed: %s" % e
+    pr = None
+    ok_l, listed = _gh_json(["pr", "list", "--head", branch,
+                             "--json", "number,url,headRefName,state"], runner=run)
+    if ok_l:    # adopt an existing PR for this head — crash-safe resubmit
+        open_prs = [p for p in listed if p.get("state") == "OPEN"]
+        pr = open_prs[0] if open_prs else None
+    if pr is None:
+        body = ("Closes #%d\n<!-- agent:%s -->\n\n### Files/areas touched\n%s"
+                % (issue, who,
+                   "\n".join("- `%s`" % p for p in rec.get("paths", []))
+                   or "- (see the issue)"))
+        cmd = ["pr", "create", "--head", branch,
+               "--title", ("#%d %s" % (issue, rec.get("title", "")))[:80],
+               "--body", body]
+        ok_c, out_c = run(cmd + (["--draft"] if draft else []))
+        if not ok_c:
+            return False, "gh pr create failed: %s" % out_c
+        m = re.search(r"/pull/(\d+)", str(out_c))
+        if m:
+            pr = {"number": int(m.group(1)), "url": str(out_c).strip().splitlines()[-1]}
+        else:
+            ok_l2, listed2 = _gh_json(["pr", "list", "--head", branch,
+                                       "--json", "number,url"], runner=run)
+            if not (ok_l2 and listed2):
+                return False, "created a PR but could not resolve its number"
+            pr = {"number": listed2[0]["number"], "url": listed2[0].get("url", "")}
+    automerge = "armed"
+    am_ok, _ = run(["pr", "merge", str(pr["number"]), "--auto", "--squash"])
+    if not am_ok:
+        automerge = "pending"     # not mergeable yet / protection still settling
+    run(["issue", "edit", str(issue), "--add-label", "state:review"])    # best-effort
+    atomic_write_json(work_path(project, issue),
+                      dict(rec, pr={"number": pr["number"], "url": pr.get("url", ""),
+                                    "submitted": _now(), "automerge": automerge}))
+    journal_log(project, who, "work.submit",
+                {"issue": issue, "pr": pr["number"], "automerge": automerge})
+    return True, ("submitted issue #%d as PR #%d %s — auto-merge %s\n"
+                  "  next: `work land %d` once the required checks pass"
+                  % (issue, pr["number"], pr.get("url", ""), automerge, issue))
+
+
+def work_land(project: str, issue, who: str, runner=None):
+    """Single-shot landing pass for a submitted PR: finalize a MERGED one
+    (drop claim + record, delete the remote branch, journal work.landed),
+    heal a BEHIND or unarmed one, report a conflicting one. Run it until it
+    says 'landed'. Returns (ok, message)."""
+    issue = int(issue)
+    run = runner or GH_RUNNER
+    rec = _read_json(work_path(project, issue))
+    if not rec or rec.get("owner") != who:
+        return False, "issue #%d is not checked out by %s" % (issue, who)
+    pr = (rec.get("pr") or {}).get("number")
+    if not pr:
+        return False, ("issue #%d has no submitted PR — run `work submit %d` first"
+                       % (issue, issue))
+    ok, view = _gh_json(["pr", "view", str(pr),
+                         "--json", "state,mergeStateStatus,headRefName,url"], runner=run)
+    if not ok:
+        return False, view
+    if view.get("state") == "MERGED":
+        head = view.get("headRefName") or rec.get("branch", "")
+        if head:
+            run(["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/heads/" + head])
+        claim_drop(project, "issue-%d" % issue, who)
+        _work_retire(project, issue, who)
+        journal_log(project, who, "work.landed", {"issue": issue, "pr": pr})
+        return True, ("PR #%d merged — issue #%d landed; remote branch %s deleted"
+                      % (pr, issue, head or "(none)"))
+    mss = (view.get("mergeStateStatus") or "").upper()
+    if mss == "BEHIND":
+        run(["pr", "update-branch", str(pr)])
+        run(["pr", "merge", str(pr), "--auto", "--squash"])
+        return True, "PR #%d was behind — updated + auto-merge re-armed; land again later" % pr
+    if mss in ("DIRTY", "CONFLICTING"):
+        return False, "PR #%d has conflicts — rebase your branch, push, then land again" % pr
+    run(["pr", "merge", str(pr), "--auto", "--squash"])   # re-arm while checks run
+    return True, ("PR #%d open (%s) — auto-merge armed; land again later"
+                  % (pr, mss or "checks pending"))
+
+
 def work_done(project: str, issue, who: str, pr: str = "", runner=None):
     """Finish a checkout: close the issue (or link the PR and leave it open for
-    review), drop the claim + record, journal work.done. Returns (ok, message)."""
+    review), drop the claim + record, journal work.done. A checkout with an
+    unmerged submitted PR redirects to work_land — the PR is the landing path.
+    Returns (ok, message)."""
     issue = int(issue)
     run = runner or GH_RUNNER
     rec = _read_json(work_path(project, issue))
     if rec and rec.get("owner") != who:
         return False, ("issue #%d is checked out by %s — only its owner finishes it"
                        % (issue, rec.get("owner")))
+    sub_pr = (rec or {}).get("pr", {}).get("number")
+    if sub_pr and not pr:
+        ok_v, view = _gh_json(["pr", "view", str(sub_pr), "--json", "state"], runner=run)
+        if ok_v and view.get("state") != "MERGED":
+            return work_land(project, issue, who, runner=run)
     if pr:
         ok, err = run(["issue", "comment", str(issue), "--body",
                        "Agent `%s` finished this work: %s" % (who, pr)])
@@ -1483,9 +1644,11 @@ You were told you're an ADDITIONAL AGENT on a team. Do exactly this:
    issue another agent has checked out — status shows checkouts and the conflict radar.
 6. JOURNAL everything material: intents before, results after —
    `mcp collab journal log intent --data '{"text": "..."}'`. Tail it at EVERY loop start.
-7. LANDING WORK: every commit is E2E-gated (hooks + CI). Small teams: acquire the
-   git-commit lease -> fetch + rebase -> push -> release -> journal the commit hash.
-   At scale, work on your issue branch (`work start --branch`) and open a PR.
+7. LANDING WORK: every commit is E2E-gated (hooks + CI). At scale: work on your issue
+   branch (`work start <n> --branch`), then `work submit <n>` (opens THE pull request,
+   arms auto-merge behind the required checks) and `work land <n>` until it reports
+   landed — never push master directly. Small same-machine teams may still serialize
+   master pushes with the git-commit lease (fetch + rebase + push + release + journal).
 8. Message any teammate: `mcp comms send <callsign> note "<text>"`; read yours each loop.
 Projects may carry their own onboarding (e.g. a repo skill) with project-specific lease names —
 that version wins on specifics.
@@ -1804,6 +1967,36 @@ def selftest():
         check("work drop returns the issue to state:available",
               d16_ok and dr16_ok
               and "state:available" in state["issues"]["16"]["labels"])
+
+        # PR landing path: submit -> auto-merge -> land
+        state["issues"]["17"] = {"title": "Landing probe",
+                                 "url": "https://github.com/x/y/issues/17",
+                                 "body": "Edits src/land.py",
+                                 "labels": ["state:available"], "state": "open"}
+        s17_ok, _ = work_start(P, 17, A, runner=fake)
+        atomic_write_json(work_path(P, 17),
+                          dict(_read_json(work_path(P, 17)), branch="agent/selfA/issue-17"))
+        sub_ok, _ = work_submit(P, 17, A, runner=fake)
+        rec17 = _read_json(work_path(P, 17))
+        check("work submit opens the PR + arms auto-merge + labels state:review",
+              s17_ok and sub_ok and (rec17.get("pr") or {}).get("number")
+              and "state:review" in state["issues"]["17"]["labels"]
+              and any(e["event"] == "work.submit" for e in journal_tail(P, 10)))
+        sub2_ok, _ = work_submit(P, 17, A, runner=fake)
+        rec17b = _read_json(work_path(P, 17))
+        check("resubmit adopts the existing PR (crash-safe)",
+              sub2_ok and rec17b["pr"]["number"] == rec17["pr"]["number"])
+        l1_ok, _ = work_land(P, 17, A, runner=fake)          # still OPEN: re-arm only
+        still_checked_out = work_path(P, 17).exists()
+        for p in state["prs"].values():
+            if p["number"] == rec17["pr"]["number"]:
+                p["state"] = "MERGED"
+        l2_ok, _ = work_land(P, 17, A, runner=fake)
+        check("work land: open PR re-arms without finalizing; merged PR releases all",
+              l1_ok and still_checked_out and l2_ok and not work_path(P, 17).exists()
+              and "issue-17" not in {c["id"] for c in claims_all(P)}
+              and "agent/selfA/issue-17" in state.get("deleted_refs", [])
+              and any(e["event"] == "work.landed" for e in journal_tail(P, 10)))
 
         # ---- seats ----
         wd1 = Path(tempfile.mkdtemp(prefix="seat1-", dir=store))
@@ -2136,6 +2329,10 @@ def main():
         if "--branch" in args:
             args.remove("--branch")
             make_branch = True
+        draft = False
+        if "--draft" in args:
+            args.remove("--draft")
+            draft = True
         pr = _pop_opt(args, "--pr", "")
         verb = args[1] if len(args) > 1 else "list"
         try:
@@ -2149,11 +2346,16 @@ def main():
                 ok, out = work_drop(project, args[2], who)
             elif verb == "verify" and len(args) >= 3:
                 ok, out = work_verify(project, args[2], who)
+            elif verb == "submit" and len(args) >= 3:
+                ok, out = work_submit(project, args[2], who, draft)
+            elif verb == "land" and len(args) >= 3:
+                ok, out = work_land(project, args[2], who)
             elif verb == "tick" and len(args) >= 4:
                 ok, out = work_tick(project, args[2], args[3], who)
             else:
-                print("[FAIL] work list | start <issue#> [--branch] | done <issue#> "
-                      "[--pr URL] | drop <issue#> | verify <issue#> | tick <issue#> <item#>")
+                print("[FAIL] work list | start <issue#> [--branch] | submit <issue#> "
+                      "[--draft] | land <issue#> | done <issue#> [--pr URL] | "
+                      "drop <issue#> | verify <issue#> | tick <issue#> <item#>")
                 return 1
         except ValueError:
             print("[FAIL] issue/item must be numbers")

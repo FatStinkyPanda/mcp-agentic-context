@@ -205,10 +205,12 @@ Multi-Agent Collaboration:
     collab work list            Open GitHub issues + who has them checked out
     collab work start <issue#> [--branch]   Check OUT an issue (assign+label+claim+journal)
     collab work verify <issue#> Still mine on GitHub? Lost checkouts self-drop
+    collab work submit <issue#> [--draft]   Push branch + open THE PR + arm auto-merge
+    collab work land <issue#>   Finalize a merged PR (release all, delete branch)
     collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
-    collab selftest             45-check engine verification (throwaway store)
+    collab selftest             48-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 

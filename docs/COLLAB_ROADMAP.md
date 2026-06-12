@@ -52,10 +52,19 @@ self-drops). `work verify <issue#>` re-confirms a checkout at loop start / befor
 and SELF-DROPS lost checkouts (journal `work.lost_race`) so two machines never finish the
 same issue; `work drop` returns the label. Selftest 45/45.
 
-Remaining from the scale blueprint (follow-up order): `work submit`/`work land` PR landing
-path, `collab github-setup` (seed `state:available` + labels + master ruleset requiring the
-CI contexts), issue forms + shared parser, shared gh issue cache + rate-limit penalty gate,
-reconciler workflow (seed/dedupe), `work next` conflict-aware auto-assignment.
+**PR landing path — SHIPPED 2026-06-12:** `work submit <n>` pushes the issue branch, opens
+(or crash-safely ADOPTS) the PR — body leads with `Closes #N` so the merge closes the
+issue — arms auto-merge behind the required CI checks, labels `state:review`, journals
+`work.submit`. `work land <n>` is the single-shot landing pass: finalizes a MERGED PR
+(claim + record released, remote branch deleted, `work.landed`), heals a BEHIND/unarmed
+one, reports conflicts. `work done` redirects to `land` when a submitted PR is open.
+At scale, agents never push master directly. Selftest 48/48.
+
+Remaining from the scale blueprint (follow-up order): `collab github-setup` (seed
+`state:available` + labels + master ruleset requiring the CI contexts — only NOW safe to
+apply, since the landing path exists), issue forms + shared parser, shared gh issue cache +
+rate-limit penalty gate, reconciler workflow (seed/dedupe), `work next` conflict-aware
+auto-assignment.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):
