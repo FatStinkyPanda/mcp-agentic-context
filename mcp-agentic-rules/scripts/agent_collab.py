@@ -787,7 +787,8 @@ def _fake_gh_apply(state: dict, gh_args):
         # modeled: label-CAS DELETE, remote-branch DELETE, rulesets, check-runs
         method = gh_args[gh_args.index("-X") + 1] if "-X" in gh_args else "GET"
         path_arg = next((a for a in gh_args[1:] if not a.startswith("-")
-                         and a not in ("GET", "POST", "PUT", "DELETE")), gh_args[-1])
+                         and a not in ("GET", "POST", "PUT", "PATCH", "DELETE")),
+                        gh_args[-1])
         mref = re.search(r"/git/refs/heads/(.+)$", gh_args[-1])
         if method == "DELETE" and mref:
             state.setdefault("deleted_refs", []).append(mref.group(1))
@@ -815,6 +816,9 @@ def _fake_gh_apply(state: dict, gh_args):
         if "/check-runs" in path_arg:
             return True, json.dumps({"check_runs": [{"name": n}
                                      for n in state.get("check_runs", [])]})
+        if method == "PATCH" and re.fullmatch(r"repos/[^/\s]+/[^/\s]+", path_arg):
+            state.setdefault("repo_settings", {})["allow_auto_merge"] = True
+            return True, "{}"
         m = re.search(r"/issues/(\d+)/labels/(.+)$", gh_args[-1])
         if method == "DELETE" and m:
             k, label = m.group(1), m.group(2).replace("%3A", ":").replace("%3a", ":")
@@ -1227,7 +1231,18 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
             subprocess.run(["git", "checkout", "-b", branch], capture_output=True,
                            text=True, timeout=30, check=True)
         except Exception as e:
-            branch, branch_err = "", str(e)
+            # a nonzero POST-CHECKOUT hook makes git report failure AFTER the
+            # branch was created and switched — trust the actual repo state
+            try:
+                cur = subprocess.run(["git", "branch", "--show-current"],
+                                     capture_output=True, text=True,
+                                     timeout=15).stdout.strip()
+            except Exception:
+                cur = ""
+            if cur != branch:
+                branch, branch_err = "", str(e)
+            else:
+                branch_err = "post-checkout hook reported failure (branch OK): %s" % e
     payload = dict(pending, branch=branch, phase="active")
     atomic_write_json(wpath, payload)
     journal_log(project, who, "work.start",
@@ -1565,6 +1580,7 @@ def github_setup(project: str, who: str, apply: bool = False, runner=None):
     ok_r, rulesets = _gh_json(["api", "repos/{owner}/{repo}/rulesets"], runner=run)
     existing = next((r for r in (rulesets if ok_r and isinstance(rulesets, list) else [])
                      if r.get("name") == RULESET_NAME), None)
+    plan.append("repo: enable allow_auto_merge (work submit arms auto-merge)")
     plan.append("labels: ensure %s" % ", ".join(n for n, _ in SETUP_LABELS))
     plan.append("seed state:available onto %d open issue(s): %s"
                 % (len(to_seed), ", ".join("#%d" % n for n in to_seed[:10]) or "(none)"))
@@ -1585,6 +1601,8 @@ def github_setup(project: str, who: str, apply: bool = False, runner=None):
                        "branch commit: %s" % ", ".join(missing),
                        "requiring them would hard-block ALL merging. Fix ci.yml / "
                        "REQUIRED_CHECK_CONTEXTS first (they must match exactly)."]
+    run(["api", "-X", "PATCH", "repos/{owner}/{repo}",
+         "-F", "allow_auto_merge=true"])      # work submit arms auto-merge — enable the setting
     for name, color in SETUP_LABELS:
         run(["label", "create", name, "--color", color, "--force"])
     for n in to_seed:
@@ -2361,7 +2379,8 @@ def selftest():
               ap_ok and ap2_ok and len(rs) == 1
               and ctxs == set(REQUIRED_CHECK_CONTEXTS)
               and "state:available" in state["issues"]["20"]["labels"]
-              and "state:available" in state.get("labels_created", []))
+              and "state:available" in state.get("labels_created", [])
+              and state.get("repo_settings", {}).get("allow_auto_merge") is True)
 
         # ---- seats ----
         wd1 = Path(tempfile.mkdtemp(prefix="seat1-", dir=store))
