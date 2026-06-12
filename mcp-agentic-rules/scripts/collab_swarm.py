@@ -363,12 +363,16 @@ def main():
     r.add_argument("--keep", action="store_true")
     r.add_argument("--json", action="store_true")
     r.add_argument("--store", default=None)
+    r.add_argument("--timeout", type=float, default=None,
+                   help="per-role budget; default scales with agents*iters "
+                        "(100x40 hammer on 2-core CI needs ~25min, not 180s)")
     a = ap.parse_args()
     if a.cmd == "worker":
         return worker_main(a)
     if a.cmd == "run":
+        timeout = a.timeout if a.timeout else max(180.0, a.agents * a.iters * 0.4)
         report = run_swarm(store=a.store, agents=a.agents, iters=a.iters, ttl=a.ttl,
-                           hammer=a.hammer, keep=a.keep)
+                           hammer=a.hammer, keep=a.keep, timeout=timeout)
         if a.json:
             print(json.dumps(report, indent=2))
         else:

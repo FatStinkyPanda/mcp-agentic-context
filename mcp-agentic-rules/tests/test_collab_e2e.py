@@ -110,6 +110,7 @@ def test_swarmtest_cli_exit_contract():
 @pytest.mark.soak
 def test_soak_100_agents():
     """The headline claim, literally: 100 concurrent agent processes on one
-    store with hammer-mode lease churn. Nightly CI; ~10+ minutes."""
+    store with hammer-mode lease churn. Nightly CI; ~15-30 minutes (the mutex
+    role serializes 4000 critical sections on 2-core runners)."""
     _assert_swarm(collab_swarm.run_swarm(
-        agents=100, iters=40, hammer=True, timeout=900))
+        agents=100, iters=40, hammer=True, timeout=1800))
