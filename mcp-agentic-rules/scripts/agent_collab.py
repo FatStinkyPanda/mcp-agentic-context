@@ -272,19 +272,63 @@ def lease_info(project: str, resource: str):
 
 
 def _fence_path(project: str, resource: str) -> Path:
+    """Legacy v2 sidecar JSON — read forever, written never."""
     return lease_path(project, resource).with_suffix(".fence.json")
 
 
+def _fence_dir(project: str, resource: str) -> Path:
+    d = lease_path(project, resource).with_suffix(".fence.d")
+    d.mkdir(exist_ok=True)
+    return d
+
+
 def _fence_read(project: str, resource: str) -> int:
-    data = _read_json(_fence_path(project, resource))
-    return int(data.get("fence", 0)) if data else 0
+    """High-water mark = max over the O_EXCL reservation markers (+ legacy sidecar)."""
+    best = 0
+    legacy = _read_json(_fence_path(project, resource))
+    if legacy:
+        best = int(legacy.get("fence", 0))
+    d = lease_path(project, resource).with_suffix(".fence.d")
+    if d.is_dir():
+        for f in d.iterdir():
+            try:
+                best = max(best, int(f.name))
+            except ValueError:
+                pass
+    return best
+
+
+def _fence_reserve(project: str, resource: str, start: int) -> int:
+    """Reserve a UNIQUE fence >= start. Each fence is an O_EXCL marker file —
+    no shared-file rewrites at all, so fencing has NO replace races and no
+    contention hot-spot (the 100-agent soak killed a worker on sidecar replace
+    storms, and read-check-write bumps could even REGRESS the high-water).
+    Uniqueness and monotonicity are structural: O_EXCL admits one winner per
+    number, and reservation precedes the lease file's existence."""
+    fence = max(int(start), _fence_read(project, resource) + 1)
+    d = _fence_dir(project, resource)
+    for _ in range(100_000):
+        try:
+            os.close(os.open(d / str(fence), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return fence
+        except FileExistsError:
+            fence += 1
+        except PermissionError:        # delete-pending from janitor pruning
+            fence += 1
+    raise RuntimeError("fence space exhausted for %s" % resource)
 
 
 def _fence_bump(project: str, resource: str, new_fence: int):
-    """Record the fence high-water mark (monotonic max; lower values never win)."""
-    if new_fence > _fence_read(project, resource):
-        atomic_write_json(_fence_path(project, resource),
-                          {"fence": new_fence, "updated": _now()})
+    """Ensure the high-water record covers new_fence (idempotent O_EXCL marker;
+    used by retire paths so a fence survives its lease file)."""
+    new_fence = int(new_fence or 0)
+    if new_fence <= 0 or _fence_read(project, resource) >= new_fence:
+        return
+    try:
+        os.close(os.open(_fence_dir(project, resource) / str(new_fence),
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except OSError:
+        pass
 
 
 def _file_age(path: Path) -> float:
@@ -372,14 +416,16 @@ def lease_acquire(project: str, resource: str, who: str, ttl: float = DEFAULT_TT
                          "previous_owner": (parsed or {}).get("owner"),
                          "previous_fence": (parsed or {}).get("fence")})
         taken_fence = int((parsed or {}).get("fence", 0)) if (current or corrupt) else 0
-        fence = max(_fence_read(project, resource), taken_fence) + 1
+        # RESERVE-then-create: the fence marker exists BEFORE any lease file
+        # carrying it can — losers leave harmless gaps, fences never repeat
+        # and never regress (both found by the 100-agent soak).
+        fence = _fence_reserve(project, resource, taken_fence + 1)
         payload = {"resource": resource, "owner": who, "workdir": cwd, "session": SESSION,
                    "acquired": _now(), "renewed": _now(), "ttl": ttl, "note": note,
                    "fence": fence, "v": 2}
         try:
             with open(path, "x", encoding="utf-8") as f:           # O_EXCL: atomic on NTFS/POSIX
                 json.dump(payload, f, indent=2)
-            _fence_bump(project, resource, fence)
             journal_log(project, who, "lease.acquired",
                         {"resource": resource, "note": note, "fence": fence})
             return True, payload
@@ -2006,6 +2052,21 @@ def _janitor_sweep(project: str, who: str, dry_run: bool = False):
                     reap(f, "journal_archive")
             except OSError:
                 pass
+    for fdir in (base / "leases").glob("*.fence.d"):
+        if not fdir.is_dir():
+            continue
+        nums = sorted((int(f.name) for f in fdir.iterdir()
+                       if f.name.isdigit()), reverse=True)
+        for n in nums[5:]:                  # the high-water needs only the top markers
+            if state["deleted"] >= GC_UNLINK_BOUND:
+                break
+            if not dry_run:
+                try:
+                    (fdir / str(n)).unlink()
+                except OSError:
+                    continue
+            counts["fence_marker"] = counts.get("fence_marker", 0) + 1
+            state["deleted"] += 1
     for maildir in (comms / "messages", comms / "telegram_inbox", comms / "telegram_outbox"):
         if not maildir.is_dir():
             continue
@@ -2206,7 +2267,7 @@ def selftest():
         ra_ok, ra = lease_acquire(P, "hardened", A, ttl=600)
         check("re-acquiring your own expired lease mints a HIGHER fence",
               ra_ok and ra["fence"] == lh["fence"] + 1)
-        _fence_path(P, "hardened").unlink()        # simulate a crashed sidecar bump
+        _fence_path(P, "hardened").unlink(missing_ok=True)   # legacy sidecar (unused now)
         lease_release(P, "hardened", A, fence=ra["fence"])
         cw_ok, cw = lease_acquire(P, "hardened", B, ttl=600)
         check("retirement preserves the fence high-water mark (crash window closed)",
