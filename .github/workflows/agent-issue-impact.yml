@@ -85,9 +85,7 @@ jobs:
                 | sort -n | head -n1)
           if [ -n "$cid" ]; then
             old=$(gh api "repos/${{ github.repository }}/issues/comments/$cid" --jq .body)
+            warn="> [!WARNING]"$'\n'"> impact report FAILED for ${{ github.sha }} — the content above may be stale."
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$cid" \
-              -f body="$old
-
-> [!WARNING]
-> impact report FAILED for ${{ github.sha }} — the content above may be stale." || true
+              -f body="$old"$'\n\n'"$warn" || true
           fi
