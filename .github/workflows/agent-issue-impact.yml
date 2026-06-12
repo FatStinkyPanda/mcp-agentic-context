@@ -22,9 +22,12 @@ permissions:
   contents: read
   issues: write
 
+# queue, never cancel: one `issue edit --add-label a,b` emits TWO labeled
+# events; with cancel-in-progress the irrelevant second event (which the job
+# `if` then skips) would cancel the relevant first one — net zero runs.
 concurrency:
   group: issue-impact-${{ github.event.issue.number || inputs.issue_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   impact:
