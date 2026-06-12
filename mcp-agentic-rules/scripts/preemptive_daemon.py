@@ -186,7 +186,8 @@ class PreemptiveDaemon:
                 try:
                     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                         source = f.read()
-                    compile(source, str(path), 'exec')
+                    import ast
+                    ast.parse(source, filename=str(path))
                 except SyntaxError as e:
                     errors.append({
                         "file": str(path.name),

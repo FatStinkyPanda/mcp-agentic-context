@@ -2465,9 +2465,11 @@ class SubagentTask:
         def run_proc():
             try:
                 env = os.environ.copy()
+                import shlex
+                cmd_args = shlex.split(self.command, posix=(os.name != 'nt'))
                 self.process = subprocess.Popen(
-                    self.command,
-                    shell=True,
+                    cmd_args,
+                    shell=False,
                     cwd=str(self.root_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
