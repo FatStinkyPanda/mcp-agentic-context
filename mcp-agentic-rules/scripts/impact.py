@@ -204,13 +204,27 @@ class DependencyGraph:
         module_name = str(file_path.relative_to(root).with_suffix('')).replace('\\', '.').replace('/', '.')
         self.module_to_file[module_name] = file_key
 
-        # Extract imports
+        # Extract imports. Relative imports resolve against this file's package
+        # so `from . import sibling` / `from .utils import X` count as dependencies.
+        package_parts = module_name.split('.')[:-1]
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     self.imports[file_key].add(alias.name)
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
+                level = getattr(node, 'level', 0) or 0
+                if level:
+                    base = package_parts[:len(package_parts) - (level - 1)] \
+                        if level > 1 else list(package_parts)
+                    prefix = '.'.join(base)
+                    if node.module:
+                        self.imports[file_key].add(
+                            f"{prefix}.{node.module}" if prefix else node.module)
+                    else:
+                        for alias in node.names:    # from . import sibling
+                            self.imports[file_key].add(
+                                f"{prefix}.{alias.name}" if prefix else alias.name)
+                elif node.module:
                     self.imports[file_key].add(node.module)
 
     def _add_js_file(self, file_path: Path, root: Path, file_key: str,
@@ -240,13 +254,21 @@ class DependencyGraph:
             self.add_file(file_path, root, workspace_map)
 
         # Build reverse mapping: Python imports resolve via module names,
-        # JS/TS imports are already repo-relative file keys.
+        # JS/TS imports are already repo-relative file keys. Imports rooted at
+        # a sys.path entry below the repo root (e.g. `scripts.x` inside a
+        # subpackage) resolve by module-suffix match — over-approximating is
+        # safer than missing a dependent in an impact report.
         for file_key, imports in self.imports.items():
             for imp in imports:
                 if imp in self.module_to_file:
                     self.imported_by[self.module_to_file[imp]].add(file_key)
                 elif imp in self.all_files:
                     self.imported_by[imp].add(file_key)
+                else:
+                    suffix = '.' + imp
+                    for mod, fkey in self.module_to_file.items():
+                        if mod.endswith(suffix):
+                            self.imported_by[fkey].add(file_key)
 
     def get_dependents(self, file_path: str) -> Set[str]:
         """Get files that depend on this file."""

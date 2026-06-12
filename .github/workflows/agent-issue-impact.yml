@@ -1,0 +1,51 @@
+# Auto-impact on checkout: when an agent checks out an issue (assignment or the
+# in-progress label, e.g. via `mcp collab work start`), analyze the file paths
+# mentioned in the issue body with this package's own impact engine and post a
+# single, continuously-updated comment: importers, transitive dependents,
+# affected tests, and a conflict radar against every other in-progress issue.
+name: agent-issue-impact
+
+on:
+  issues:
+    types: [assigned, labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  impact:
+    if: github.event.action == 'assigned' || github.event.label.name == 'in-progress'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the impact report
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python mcp-agentic-rules/scripts/impact_report.py \
+            --from-env ISSUE_BODY --issue "$ISSUE_NUMBER" --radar > impact_comment.md
+          cat impact_comment.md
+
+      - name: Upsert the report comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          marker='<!-- agent-impact -->'
+          cid=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
+                  --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" \
+                | head -n1)
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$cid" \
+              -f body="$(cat impact_comment.md)"
+          else
+            gh issue comment "$ISSUE_NUMBER" --body-file impact_comment.md
+          fi

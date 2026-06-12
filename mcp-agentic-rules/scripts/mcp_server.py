@@ -263,6 +263,29 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["verb"],
         },
     },
+    {
+        "name": "collab_work",
+        "description": "MULTI-AGENT teams: GitHub issues checked out like leases (gh-backed). "
+                       "verb=list (open issues + who holds what) | start (assign + label the "
+                       "issue, create the matching claim carrying the issue URL, journal "
+                       "work.start, optional branch) | done (close it or link a PR, release "
+                       "everything) | drop (un-checkout) | tick (check off task-list item N "
+                       "in the issue body). Degrades with a clear error when gh is absent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "verb": {"type": "string", "description": "list | start | done | drop | tick"},
+                "issue": {"type": "integer", "description": "Issue number (every verb except list)"},
+                "item": {"type": "integer", "description": "tick: 1-based checkbox index"},
+                "pr": {"type": "string", "description": "done: PR URL to link instead of closing"},
+                "branch": {"type": "boolean",
+                           "description": "start: create + switch to branch agent/<id>/issue-<n>"},
+                "project": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+            "required": ["verb"],
+        },
+    },
 ]
 
 # Tool output is conversation context; cap pathological reports.
@@ -456,6 +479,14 @@ class MCPServer:
         lines.append("-- claims --")
         cs = ac.claims_all(project)
         lines += ([f"  {c['id']}: {c['pattern']} (owner {c['owner']})" for c in cs] or ["  (none)"])
+        lines.append("-- work (gh issues checked out) --")
+        ws = ac.work_all(project)
+        lines += ([f"  #{w['issue']} {w.get('title', '')[:48]} (owner {w['owner']}"
+                   + (f", branch {w['branch']}" if w.get('branch') else "") + ")"
+                   for w in ws] or ["  (none)"])
+        for ia, oa, ib, ob, ov in ac.work_conflicts(project):
+            lines.append(f"  [CONFLICT RADAR] #{ia} ({oa}) and #{ib} ({ob}) "
+                         f"both touch: {', '.join(ov[:5])}")
         lines.append("-- journal (last 12) --")
         for e in ac.journal_tail(project, 12):
             lines.append(f"  {e['ts']} {e['who']:<16} {e['event']:<20} "
@@ -526,6 +557,30 @@ class MCPServer:
         return "unknown verb '%s' (add|drop|list)" % verb
 
     # ---- protocol --------------------------------------------------------
+
+    def tool_collab_work(self, args: dict) -> str:
+        ac, project, who = self._collab_ctx(args)
+        verb = str(args.get("verb", "")).lower()
+        if verb == "list":
+            ok, out = ac.work_list(project, who)
+            return ("OK\n" if ok else "FAIL — ") + out
+        issue = args.get("issue")
+        if issue is None:
+            return "issue number required for '%s'" % verb
+        try:
+            if verb == "start":
+                ok, out = ac.work_start(project, issue, who, bool(args.get("branch")))
+            elif verb == "done":
+                ok, out = ac.work_done(project, issue, who, str(args.get("pr") or ""))
+            elif verb == "drop":
+                ok, out = ac.work_drop(project, issue, who)
+            elif verb == "tick":
+                ok, out = ac.work_tick(project, issue, int(args.get("item", 0)), who)
+            else:
+                return "unknown verb '%s' (list|start|done|drop|tick)" % verb
+        except (TypeError, ValueError):
+            return "issue/item must be numbers"
+        return ("OK — " if ok else "FAIL — ") + out
 
     def call_tool(self, name: str, arguments: dict) -> str:
         handler = getattr(self, f"tool_{name}", None)

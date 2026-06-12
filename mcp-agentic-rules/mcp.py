@@ -196,10 +196,13 @@ CI/CD:
     pipeline [--gitlab]         Generate pipeline
 
 Multi-Agent Collaboration:
-    collab status               Agents + leases + claims + journal in one view
+    collab status               Agents + leases + claims + work + journal in one view
     collab lease acquire <res>  Exclusive TTL'd lease (editor/build/git-commit/...)
     collab lease release|renew|break|status <res>
     collab claim add <id> <pattern>  Advisory work-area ownership
+    collab work list            Open GitHub issues + who has them checked out
+    collab work start <issue#> [--branch]   Check OUT an issue (assign+label+claim+journal)
+    collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
     comms status|send|listen    Presence + agent-to-agent messages
 

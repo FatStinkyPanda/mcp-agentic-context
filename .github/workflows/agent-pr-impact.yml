@@ -1,0 +1,51 @@
+# On-PR impact: analyze the diff with this package's own impact engine and keep
+# one upserted comment on the PR — importers, transitive dependents, affected
+# tests, plus a conflict radar against open in-progress issues so a PR that
+# lands in the middle of another agent's checkout is flagged before merge.
+name: agent-pr-impact
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the impact report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python mcp-agentic-rules/scripts/impact_report.py \
+            --diff "origin/${{ github.base_ref }}...HEAD" \
+            --title "Impact of this PR's diff" --radar > impact_comment.md
+          cat impact_comment.md
+
+      - name: Upsert the report comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- agent-impact -->'
+          cid=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                  --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" \
+                | head -n1)
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$cid" \
+              -f body="$(cat impact_comment.md)"
+          else
+            gh pr comment "$PR_NUMBER" --body-file impact_comment.md
+          fi

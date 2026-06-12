@@ -355,13 +355,21 @@ python mcp-agentic-rules/mcp.py collab lease release editor --as forge
 # Advisory ownership of source areas (no conflicting authorship)
 python mcp-agentic-rules/mcp.py collab claim add creatures "src/creatures/*" --as forge
 
+# GitHub-native work checkout: the unit of work is a GitHub issue, checked out
+# like a lease (gh-backed; degrades with a clear error when gh/network is absent)
+python mcp-agentic-rules/mcp.py collab work list                  # open issues + who holds what
+python mcp-agentic-rules/mcp.py collab work start 7 --as forge    # assign + label + claim + journal
+python mcp-agentic-rules/mcp.py collab work tick 7 2 --as forge   # tick task-list checkbox 2
+python mcp-agentic-rules/mcp.py collab work done 7 --pr <url>     # or close it; releases everything
+python mcp-agentic-rules/mcp.py collab work drop 7 --as forge     # un-checkout without finishing
+
 # The team radio: log what you do; tail it at EVERY loop start
 python mcp-agentic-rules/mcp.py collab journal log intent --data '{"text":"refactor auth"}'
 python mcp-agentic-rules/mcp.py collab journal tail 20
 
 # Onboarding an additional agent? It runs:
 python mcp-agentic-rules/mcp.py collab onboard     # prints the full join-the-team procedure
-python mcp-agentic-rules/mcp.py collab selftest    # 6-check engine verification
+python mcp-agentic-rules/mcp.py collab selftest    # 12-check engine verification (offline)
 ```
 
 **The identity rule:** one working directory = one agent. Heartbeats carry the workdir, and two
@@ -369,9 +377,19 @@ live sessions beating one identity from different directories trigger a loud IDE
 warning — give each session its own checkout (`git worktree add`) and call-sign. The store is
 plain files under `~/.mcp/nsync/.nsync_agents/collab/<project>/` — any tool can speak it, and
 the MCP server exposes it as `collab_status` / `collab_lease` / `collab_journal` /
-`collab_message` / `collab_claim` tools. Recommended lease law for code projects: a live
-tool/editor seat (its holder is the *pilot*), `rebuild`, `git-commit` (hold while
-rebase+push), `bench`.
+`collab_message` / `collab_claim` / `collab_work` tools. Recommended lease law for code
+projects: a live tool/editor seat (its holder is the *pilot*), `rebuild`, `git-commit` (hold
+while rebase+push), `bench`.
+
+**GitHub-native checkout (`collab work`):** `work start` assigns the issue, labels it
+`in-progress` + `agent:<callsign>`, creates the matching claim (file paths extracted from the
+issue body; issue URL in the note), records the checkout in the store, and journals
+`work.start` — `collab status` then shows every agent's checked-out issues, and a CONFLICT
+RADAR warns when two checkouts' path sets intersect. Two GitHub Actions complete the loop:
+`agent-issue-impact` fires when an issue is assigned or labeled `in-progress` and posts an
+auto-updated comment with the impact of the files the issue mentions (importers, transitive
+dependents, affected tests — computed by this package's own `impact` engine) plus the overlap
+radar against other in-progress issues; `agent-pr-impact` does the same for every PR diff.
 
 ### Cross-machine coordination (`comms`)
 
