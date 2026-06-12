@@ -135,8 +135,11 @@ REQUIRED_CHECK_CONTEXTS = ("test (ubuntu-latest, 3.11)", "test (windows-latest, 
 
 
 def _backoff_sleep(attempt: int, base: float = 0.5, cap: float = 15.0) -> None:
-    """AWS full-jitter backoff: sleep U(0, min(cap, base * 2^attempt))."""
-    time.sleep(random.uniform(0, min(cap, base * (2 ** attempt))))
+    """AWS full-jitter backoff: sleep U(0, min(cap, base * 2^attempt)).
+    The exponent is CLAMPED: long contended waits (100 agents on one lease)
+    reach attempt counts where 2**attempt overflows float conversion — found
+    by the 100-agent soak, where it crashed workers mid-swarm."""
+    time.sleep(random.uniform(0, min(cap, base * (2.0 ** min(attempt, 24)))))
 
 
 def atomic_write_json(path: Path, obj, fsync: bool = False) -> None:
@@ -2230,6 +2233,10 @@ def selftest():
         th.join()
         check("atomic visibility: no torn reads under concurrent rewrite",
               torn == 0 and not writer_err)
+        t_bo = time.time()
+        _backoff_sleep(10_000, base=0.001, cap=0.01)   # soak regression: huge attempts
+        check("backoff exponent is clamped (no overflow at huge attempt counts)",
+              time.time() - t_bo < 1.0)
 
         # ---- journal: order, segments, rotation, corruption tolerance ----
         journal_log(P, A, "t.one", {"n": 1})
