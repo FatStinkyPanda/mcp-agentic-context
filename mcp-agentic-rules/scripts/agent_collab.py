@@ -23,7 +23,7 @@ This file format IS the contract: thin per-project clients (e.g. AI_Gen's script
 may read/write the same files directly with stdlib only.
 
 Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
-  lease acquire <resource> [--ttl SECONDS] [--note TEXT]
+  lease acquire <resource> [--ttl SECONDS] [--note TEXT] [--wait SECONDS]
   lease release <resource>
   lease renew   <resource>
   lease status  [resource]
@@ -34,7 +34,15 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
   journal log <event> [--data JSON]
   journal tail [N]
   status                              (presence + leases + claims + journal tail, one view)
+  heartbeat [STATUS] [TASK]           (presence beat — also detects identity collisions)
+  onboard                             (print the complete join-the-team procedure for an agent)
+  selftest                            (verify the whole engine on an isolated scope — 6 checks)
   whoami
+
+IDENTITY RULE: one working directory = one agent identity. If two sessions in DIFFERENT
+directories heartbeat the same identity, status/heartbeat warn loudly (identity collision —
+leases cannot protect sessions that look like one agent). Give each session its own checkout
+(e.g. `git worktree add`) and its own call-sign.
 """
 
 from pathlib import Path
@@ -73,6 +81,33 @@ def _read_json(p: Path):
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+# ── presence + identity-collision detection ──────────────────────────────────────────────────
+def heartbeat(who: str, status: str = "active", task: str = "", project: str = "default"):
+    """Presence beat carrying the WORKDIR. Returns (payload, collision_warning_or_None).
+    Two live sessions beating one identity from DIFFERENT workdirs = an identity collision:
+    leases cannot protect sessions that look like one agent."""
+    presence_file = get_comms_dir() / f"{who}.json"
+    warning = None
+    prev = None
+    try:
+        prev = json.loads(presence_file.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    cwd = str(Path.cwd())
+    if prev and prev.get("workdir") and prev["workdir"] != cwd \
+            and (_now() - prev.get("timestamp", 0)) < 300:
+        warning = ("IDENTITY COLLISION: '%s' heartbeated from '%s' %ds ago and is now beating "
+                   "from '%s'. Two sessions are sharing one identity — leases CANNOT protect "
+                   "them from each other. Give this session its own checkout (git worktree) and "
+                   "call-sign." % (who, prev["workdir"], int(_now() - prev.get("timestamp", 0)), cwd))
+        journal_log(project, who, "identity.collision",
+                    {"previous_workdir": prev["workdir"], "current_workdir": cwd})
+    payload = {"hostname": who, "timestamp": _now(), "status": status,
+               "current_task": task, "last_seen": time.ctime(), "workdir": cwd}
+    presence_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload, warning
 
 
 # ── leases ────────────────────────────────────────────────────────────────────────────────────
@@ -208,10 +243,21 @@ def claims_all(project: str):
 
 
 # ── journal (the team's radio channel) ────────────────────────────────────────────────────────
+JOURNAL_ROTATE_BYTES = 2 * 1024 * 1024   # rotate at 2 MB so the radio channel never bloats
+
+
 def journal_log(project: str, who: str, event: str, data=None):
+    path = collab_dir(project) / "journal.ndjson"
+    try:
+        if path.exists() and path.stat().st_size > JOURNAL_ROTATE_BYTES:
+            rotated = path.with_name("journal.1.ndjson")
+            rotated.unlink(missing_ok=True)
+            path.rename(rotated)
+    except OSError:
+        pass   # rotation is best-effort; never lose the event over it
     line = json.dumps({"t": _now(), "ts": time.ctime(), "who": who,
                        "event": event, "data": data or {}}, ensure_ascii=False)
-    with open(collab_dir(project) / "journal.ndjson", "a", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 
@@ -227,6 +273,87 @@ def journal_tail(project: str, n: int = 20):
         except Exception:
             pass
     return out
+
+
+# ── onboarding (the "you are an additional agent" answer, generic for any project) ────────────
+ONBOARD_TEXT = """\
+=== HOW TO JOIN A MULTI-AGENT COLLAB TEAM (mcp collab) ===
+You were told you're an ADDITIONAL AGENT on a team. Do exactly this:
+
+0. IDENTITY RULE — one working directory = one agent. Run `mcp collab status --project <P>`:
+   if an ACTIVE agent already heartbeats from THIS directory, STOP — this directory is that
+   agent's seat. Get your own checkout (`git worktree add ../<proj>_<callsign>`) first.
+1. Pick a CALL-SIGN and use it on every command via --as <callsign> (or set AGENT_IDENTITY).
+   Heartbeat yourself in: `mcp collab heartbeat active "joining the team" --as <callsign>`.
+2. READ THE ROOM: `mcp collab status --project <P>` — active agents + their tasks, every
+   lease (who is allowed to do what), claims (who owns which source areas), the journal tail
+   (what just happened). Check your mail: `mcp comms listen`.
+3. THE LEASE LAW (typical resources — projects may define more):
+   - A lease is EXCLUSIVE while its holder is alive (TTL-renewed). NEVER work around a held
+     lease; coordinate via messages/journal instead. Stale leases auto-break — never deadlock.
+   - Common leases: a live tool/editor seat (its holder is the PILOT), build/rebuild rights,
+     the git-commit window (hold while rebase+push), exclusive test/bench windows.
+4. CLAIM before you author: `mcp collab claim add <id> "<path-pattern>" --as <callsign>` —
+   and respect existing claims shown in status.
+5. JOURNAL everything material: intents before, results after —
+   `mcp collab journal log intent --data '{"text": "..."}'`. Tail it at EVERY loop start.
+6. LANDING WORK: acquire the git-commit lease -> fetch + rebase -> push -> release -> journal
+   the commit hash.
+7. Message any teammate: `mcp comms send <callsign> note "<text>"`; read yours each loop.
+Projects may carry their own onboarding (e.g. a repo skill) with project-specific lease names —
+that version wins on specifics.
+"""
+
+
+def selftest():
+    """Verify the engine end-to-end on an isolated scope. Returns (ok, lines)."""
+    import shutil
+    P = "collab-selftest"
+    lines = []
+    ok = True
+
+    def check(name, cond):
+        nonlocal ok
+        lines.append(("PASS " if cond else "FAIL ") + name)
+        ok = ok and cond
+
+    shutil.rmtree(get_comms_dir() / "collab" / P, ignore_errors=True)
+    a_ok, _ = lease_acquire(P, "seat", "selfA", ttl=600)
+    b_ok, b_info = lease_acquire(P, "seat", "selfB", ttl=600)
+    a_again, _ = lease_acquire(P, "seat", "selfA", ttl=600)
+    rel_b, _ = lease_release(P, "seat", "selfB")
+    check("lease exclusion + re-entrancy + foreign-release refusal",
+          a_ok and not b_ok and b_info.get("owner") == "selfA" and a_again and not rel_b)
+    lease_release(P, "seat", "selfA")
+    lease_acquire(P, "seat", "selfA", ttl=0.5)
+    time.sleep(0.8)
+    b2_ok, _ = lease_acquire(P, "seat", "selfB", ttl=600)
+    check("stale lease auto-break", b2_ok and lease_info(P, "seat")["owner"] == "selfB")
+    lease_release(P, "seat", "selfB")
+    journal_log(P, "selfA", "t.one", {"n": 1})
+    journal_log(P, "selfB", "t.two", {"n": 2})
+    tail = journal_tail(P, 50)
+    evs = [(e["who"], e["event"]) for e in tail]
+    check("journal order", ("selfA", "t.one") in evs and ("selfB", "t.two") in evs
+          and evs.index(("selfA", "t.one")) < evs.index(("selfB", "t.two")))
+    c_ok, _ = claim_add(P, "area", "src/*", "selfA")
+    c2_ok, c2 = claim_add(P, "area", "src/x", "selfB")
+    d_ok, _ = claim_drop(P, "area", "selfA")
+    check("claim conflict + drop", c_ok and not c2_ok and c2.get("owner") == "selfA" and d_ok)
+    w_ok, w_info = lease_acquire(P, "waitres", "selfA", ttl=0.5)
+    t0 = time.time()
+    got = False
+    while time.time() - t0 < 5.0:                       # --wait semantics, inlined
+        okw, _ = lease_acquire(P, "waitres", "selfB", ttl=600)
+        if okw:
+            got = True
+            break
+        time.sleep(0.3)
+    check("wait-acquire over an expiring lease", got)
+    lease_release(P, "waitres", "selfB")
+    pay, warn = heartbeat("selfC", "active", "selftest", P)
+    check("heartbeat carries workdir", pay.get("workdir") == str(Path.cwd()) and warn is None)
+    return ok, lines
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────────────────────
@@ -258,6 +385,26 @@ def main():
         print(who)
         return 0
 
+    if cmd == "onboard":
+        print(ONBOARD_TEXT)
+        return 0
+
+    if cmd == "selftest":
+        ok, lines = selftest()
+        for line in lines:
+            print(line)
+        print("COLLAB_ENGINE_OK" if ok else "COLLAB_ENGINE_FAIL")
+        return 0 if ok else 1
+
+    if cmd == "heartbeat":
+        status = args[1] if len(args) > 1 else "active"
+        task = " ".join(args[2:]) if len(args) > 2 else ""
+        _, warn = heartbeat(who, status, task, project)
+        print("[OK] heartbeat updated")
+        if warn:
+            print("[WARN] " + warn)
+        return 0
+
     if cmd == "lease" and len(args) >= 2:
         verb = args[1]
         if verb == "status":
@@ -276,6 +423,7 @@ def main():
             print("[FAIL] lease %s needs a resource" % verb)
             return 1
         resource = args[2]
+        wait_s = float(_pop_opt(args, "--wait", 0) or 0)
         fn = {"acquire": lambda: lease_acquire(project, resource, who, ttl, note),
               "release": lambda: lease_release(project, resource, who),
               "renew": lambda: lease_renew(project, resource, who),
@@ -284,6 +432,11 @@ def main():
             print(f"[FAIL] unknown lease verb: {verb}")
             return 1
         ok, info = fn()
+        if not ok and verb == "acquire" and wait_s > 0:
+            deadline = time.time() + wait_s
+            while not ok and time.time() < deadline:   # poll until the holder releases/expires
+                time.sleep(min(2.0, max(0.3, wait_s / 20.0)))
+                ok, info = fn()
         if ok:
             print(f"[OK] {verb} {resource} ({who})")
             return 0
@@ -327,17 +480,19 @@ def main():
         return 1
 
     if cmd == "status":
-        AgentPresence.update("active", f"collab status check ({project})")
+        _, warn = heartbeat(who, "active", f"collab status check ({project})", project)
         print(f"=== {project} collaboration status (you are: {who}) ===")
+        if warn:
+            print("[WARN] " + warn)
         print("\n-- agents (presence) --")
-        me = _read_json(get_comms_dir() / f"{get_hostname()}.json") or {}
-        remotes = AgentPresence.get_remote_status()
-        for name, d in [(get_hostname(), me)] + sorted(remotes.items()):
-            if not d:
+        for f in sorted(get_comms_dir().glob("*.json")):
+            d = _read_json(f)
+            if not d or "timestamp" not in d:
                 continue
             age = _now() - d.get("timestamp", 0)
             mark = "ACTIVE" if age < 120 else "stale"
-            print(f"  {name:<20} [{mark:>6}] {d.get('current_task', '?')}  ({int(age)}s ago)")
+            wd = d.get("workdir", "?")
+            print(f"  {f.stem:<20} [{mark:>6}] {d.get('current_task', '?')[:50]}  ({int(age)}s ago)  @{wd}")
         print("\n-- leases --")
         all_leases = leases_all(project)
         if not all_leases:

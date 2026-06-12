@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.1.0 (2026-06-11)
+
+- NEW `collab` command: same-project multi-agent coordination — exclusive TTL'd
+  LEASES (atomic acquire, re-entrant, stale auto-break: a crashed session never
+  deadlocks the team; `--wait` polls until free), advisory CLAIMS on source
+  areas, an append-only per-project JOURNAL (the team radio, auto-rotated at
+  2 MB), `status` one-view, `onboard` (prints the complete join-the-team
+  procedure for an additional agent), `selftest` (6-check engine verification).
+- IDENTITY-COLLISION detection: presence heartbeats carry the working
+  directory; two live sessions beating one identity from different dirs warn
+  loudly and journal `identity.collision` (the rule: one workdir = one agent;
+  use `git worktree` per agent). Battle-tested by concurrent Claude sessions
+  on one Unreal Engine project — the collision class this catches caused a
+  real six-fixture test cascade before detection existed.
+- MCP server exposes the engine to any client: `collab_status` (+onboard),
+  `collab_lease`, `collab_journal`, `collab_message`, `collab_claim`.
+- The store file format (~/.mcp/nsync/.nsync_agents/collab/<project>/) is a
+  documented contract: zero-dependency per-project clients can speak it
+  directly (first consumer: the AI_Gen UE project, which enforces the editor
+  lease inside its bridge layer).
+
 ## v2.0.2 (2026-06-11)
 
 - review and security accept single-file paths (previously scanned 0

@@ -335,9 +335,45 @@ python mcp-agentic-rules/mcp.py record decision "Chose approach Y because Z"
 
 ## Multi-Agent Coordination
 
-MCP supports multiple AI agents collaborating across machines via the `comms` system.
+MCP supports multiple AI agents collaborating — across machines via the `comms` system, and
+**on the SAME project at the same time via `collab`** (leases + claims + journal): the
+primitives that stop concurrent agent sessions from stepping on each other, battle-tested by
+running multiple Claude sessions against one Unreal Engine project.
 
-### Coordination Workflow
+### Same-project collaboration (`collab`)
+
+```bash
+# THE one view: active agents (+ workdirs), exclusive leases, claims, journal tail
+python mcp-agentic-rules/mcp.py collab status --project myproj --as forge
+
+# Exclusive TTL'd lease on a contended resource (an editor seat, build rights,
+# the git-commit window). Atomic; re-entrant for the owner; STALE leases auto-break
+# so a crashed session never deadlocks the team. --wait polls until free.
+python mcp-agentic-rules/mcp.py collab lease acquire editor --as forge --note "verifying"
+python mcp-agentic-rules/mcp.py collab lease release editor --as forge
+
+# Advisory ownership of source areas (no conflicting authorship)
+python mcp-agentic-rules/mcp.py collab claim add creatures "src/creatures/*" --as forge
+
+# The team radio: log what you do; tail it at EVERY loop start
+python mcp-agentic-rules/mcp.py collab journal log intent --data '{"text":"refactor auth"}'
+python mcp-agentic-rules/mcp.py collab journal tail 20
+
+# Onboarding an additional agent? It runs:
+python mcp-agentic-rules/mcp.py collab onboard     # prints the full join-the-team procedure
+python mcp-agentic-rules/mcp.py collab selftest    # 6-check engine verification
+```
+
+**The identity rule:** one working directory = one agent. Heartbeats carry the workdir, and two
+live sessions beating one identity from different directories trigger a loud IDENTITY COLLISION
+warning — give each session its own checkout (`git worktree add`) and call-sign. The store is
+plain files under `~/.mcp/nsync/.nsync_agents/collab/<project>/` — any tool can speak it, and
+the MCP server exposes it as `collab_status` / `collab_lease` / `collab_journal` /
+`collab_message` / `collab_claim` tools. Recommended lease law for code projects: a live
+tool/editor seat (its holder is the *pilot*), `rebuild`, `git-commit` (hold while
+rebase+push), `bench`.
+
+### Cross-machine coordination (`comms`)
 
 ```bash
 # 1. Check if peer is active before starting

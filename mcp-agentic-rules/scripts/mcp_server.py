@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import contextlib
 import json
+import os
 import sys
 
 from .utils import find_project_root
@@ -182,6 +183,86 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "collab_status",
+        "description": "MULTI-AGENT teams: who's working this project right now — active agents "
+                       "(+ their workdirs and tasks), every exclusive lease, source-area claims, "
+                       "and the journal tail. CALL AT EVERY LOOP START when collaborating. "
+                       "onboard=true prints the complete join-the-team procedure instead.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Collab project scope (default: this repo's name)"},
+                "identity": {"type": "string", "description": "Your call-sign (default: AGENT_IDENTITY/hostname)"},
+                "onboard": {"type": "boolean", "description": "Print the onboarding procedure instead of status"},
+            },
+        },
+    },
+    {
+        "name": "collab_lease",
+        "description": "MULTI-AGENT teams: exclusive TTL'd lease on a contended resource "
+                       "(an editor seat, build rights, the git-commit window, a test bench). "
+                       "verb=acquire|release|renew|break. Stale leases auto-break; a live "
+                       "holder's lease cannot be stolen — coordinate via collab_message.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "verb": {"type": "string", "description": "acquire | release | renew | break"},
+                "resource": {"type": "string"},
+                "project": {"type": "string"},
+                "identity": {"type": "string"},
+                "ttl_seconds": {"type": "number", "description": "Lease TTL (default 600)"},
+                "note": {"type": "string"},
+            },
+            "required": ["verb", "resource"],
+        },
+    },
+    {
+        "name": "collab_journal",
+        "description": "MULTI-AGENT teams: the project's append-only radio channel. Pass event "
+                       "to LOG what you're doing (intents, commits, results, handoffs — so "
+                       "teammates know); pass tail>0 to READ the last N entries instead.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event": {"type": "string"},
+                "data_json": {"type": "string", "description": "JSON payload for the event"},
+                "tail": {"type": "integer", "description": ">0 = read mode"},
+                "project": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "collab_message",
+        "description": "MULTI-AGENT teams: direct mail between agents. Pass recipient+text to "
+                       "SEND; pass neither to READ (and consume) your own inbox.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recipient": {"type": "string"},
+                "text": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "collab_claim",
+        "description": "MULTI-AGENT teams: advisory ownership of a source area so two agents "
+                       "don't author conflicting changes. verb=add|drop|list.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "verb": {"type": "string", "description": "add | drop | list"},
+                "claim_id": {"type": "string"},
+                "pattern": {"type": "string"},
+                "note": {"type": "string"},
+                "project": {"type": "string"},
+                "identity": {"type": "string"},
+            },
+            "required": ["verb"],
+        },
+    },
 ]
 
 # Tool output is conversation context; cap pathological reports.
@@ -332,6 +413,117 @@ class MCPServer:
             lines.append(f"... and {len(todos) - limit} more "
                          f"(raise limit to see them)")
         return _cap("\n".join(lines))
+
+    # ---- multi-agent collaboration ---------------------------------------
+
+    def _collab(self):
+        from . import agent_collab
+        return agent_collab
+
+    def _collab_ctx(self, args: dict):
+        ac = self._collab()
+        project = args.get("project") or os.environ.get("MCP_COLLAB_PROJECT") or self.root.name
+        identity = args.get("identity") or ac.identity()
+        return ac, project, identity
+
+    def tool_collab_status(self, args: dict) -> str:
+        ac, project, who = self._collab_ctx(args)
+        if args.get("onboard"):
+            return ac.ONBOARD_TEXT
+        _, warn = ac.heartbeat(who, "active", "collab status check", project)
+        lines = [f"=== {project} collaboration (you are: {who}) ==="]
+        if warn:
+            lines.append("[WARN] " + warn)
+        lines.append("-- agents --")
+        import time as _t
+        for f in sorted(ac.get_comms_dir().glob("*.json")):
+            d = None
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            if not d or "timestamp" not in d:
+                continue
+            age = int(_t.time() - d["timestamp"])
+            mark = "ACTIVE" if age < 120 else "stale"
+            lines.append(f"  {f.stem:<20} [{mark}] {d.get('current_task', '?')[:50]} "
+                         f"({age}s ago) @{d.get('workdir', '?')}")
+        lines.append("-- leases --")
+        all_l = ac.leases_all(project)
+        lines += ([f"  {n}: held by {i['owner']} "
+                   f"({'STALE' if i['stale'] else str(int(i['expires_in'])) + 's left'}) {i.get('note', '')}"
+                   for n, i in sorted(all_l.items())] or ["  (all free)"])
+        lines.append("-- claims --")
+        cs = ac.claims_all(project)
+        lines += ([f"  {c['id']}: {c['pattern']} (owner {c['owner']})" for c in cs] or ["  (none)"])
+        lines.append("-- journal (last 12) --")
+        for e in ac.journal_tail(project, 12):
+            lines.append(f"  {e['ts']} {e['who']:<16} {e['event']:<20} "
+                         f"{json.dumps(e['data'], ensure_ascii=False)[:90]}")
+        return _cap("\n".join(lines))
+
+    def tool_collab_lease(self, args: dict) -> str:
+        ac, project, who = self._collab_ctx(args)
+        verb = str(args.get("verb", "")).lower()
+        resource = str(args.get("resource", ""))
+        ttl = float(args.get("ttl_seconds", 600))
+        note = str(args.get("note", ""))
+        fn = {"acquire": lambda: ac.lease_acquire(project, resource, who, ttl, note),
+              "release": lambda: ac.lease_release(project, resource, who),
+              "renew": lambda: ac.lease_renew(project, resource, who),
+              "break": lambda: ac.lease_break(project, resource, who)}.get(verb)
+        if not fn:
+            return "unknown verb '%s' (acquire|release|renew|break)" % verb
+        ok, info = fn()
+        if ok:
+            return "OK — %s %s (you: %s)" % (verb, resource, who)
+        return "HELD: %s by %s (%ds left, note=%s) — coordinate via collab_message/journal" % (
+            resource, (info or {}).get("owner"), int((info or {}).get("expires_in", 0)),
+            (info or {}).get("note", ""))
+
+    def tool_collab_journal(self, args: dict) -> str:
+        ac, project, who = self._collab_ctx(args)
+        tail = int(args.get("tail", 0))
+        if tail > 0:
+            return _cap("\n".join(
+                f"{e['ts']} {e['who']:<16} {e['event']:<20} "
+                f"{json.dumps(e['data'], ensure_ascii=False)[:100]}"
+                for e in ac.journal_tail(project, tail)) or "(empty journal)")
+        try:
+            payload = json.loads(args.get("data_json") or "{}")
+        except Exception:
+            payload = {"raw": args.get("data_json")}
+        ac.journal_log(project, who, str(args.get("event") or "note"), payload)
+        return "logged"
+
+    def tool_collab_message(self, args: dict) -> str:
+        ac, _, who = self._collab_ctx(args)
+        recipient = args.get("recipient")
+        if recipient:
+            from . import agent_comms
+            os.environ["AGENT_IDENTITY"] = who
+            agent_comms.send_message(str(recipient), "note", {"text": str(args.get("text", ""))})
+            return "sent to %s" % recipient
+        from . import agent_comms
+        os.environ["AGENT_IDENTITY"] = who
+        msgs = agent_comms.listen_for_messages()
+        return _cap("\n".join(f"[{m['from']}] ({m['type']}) {m['content']}"
+                              for m in msgs) or "(empty)")
+
+    def tool_collab_claim(self, args: dict) -> str:
+        ac, project, who = self._collab_ctx(args)
+        verb = str(args.get("verb", "")).lower()
+        if verb == "list":
+            return "\n".join(f"{c['id']}: {c['pattern']} (owner {c['owner']})"
+                             for c in ac.claims_all(project)) or "(none)"
+        if verb == "add":
+            ok, info = ac.claim_add(project, str(args.get("claim_id", "")),
+                                    str(args.get("pattern", "")), who, str(args.get("note", "")))
+            return "claimed" if ok else "already claimed by %s" % (info or {}).get("owner")
+        if verb == "drop":
+            ok, info = ac.claim_drop(project, str(args.get("claim_id", "")), who)
+            return "dropped" if ok else "owned by %s" % (info or {}).get("owner")
+        return "unknown verb '%s' (add|drop|list)" % verb
 
     # ---- protocol --------------------------------------------------------
 
