@@ -1,22 +1,36 @@
-# Auto-impact on checkout: when an agent checks out an issue (assignment or the
-# in-progress label, e.g. via `mcp collab work start`), analyze the file paths
-# mentioned in the issue body with this package's own impact engine and post a
-# single, continuously-updated comment: importers, transitive dependents,
-# affected tests, and a conflict radar against every other in-progress issue.
+# Auto-impact on checkout: when an agent checks out an issue (the in-progress
+# label, e.g. via `mcp collab work start`), analyze the file paths mentioned
+# in the issue body with this package's own impact engine and keep ONE
+# upserted comment: importers, transitive dependents, affected tests, and a
+# conflict radar against every other in-progress issue.
+#
+# Invariant: GITHUB_TOKEN-authored label edits do NOT retrigger this workflow
+# (Actions events from the workflow token are inert), so the label writes the
+# work verbs make cannot loop it.
 name: agent-issue-impact
 
 on:
   issues:
-    types: [assigned, labeled]
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'issue to (re)analyze'
+        required: true
 
 permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: issue-impact-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: true
+
 jobs:
   impact:
-    if: github.event.action == 'assigned' || github.event.label.name == 'in-progress'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'in-progress'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -27,25 +41,53 @@ jobs:
       - name: Build the impact report
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ -z "$ISSUE_BODY" ]; then
+            ISSUE_BODY="$(gh issue view "$ISSUE_NUMBER" --json body --jq .body)"
+            export ISSUE_BODY
+          fi
           python mcp-agentic-rules/scripts/impact_report.py \
             --from-env ISSUE_BODY --issue "$ISSUE_NUMBER" --radar > impact_comment.md
           cat impact_comment.md
 
-      - name: Upsert the report comment
+      - name: Upsert the report comment (self-healing dedupe)
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        run: |
+          marker='<!-- agent-impact -->'
+          ids=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
+                  --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" \
+                | sort -n)
+          keep=$(echo "$ids" | head -n1)
+          if [ -n "$keep" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$keep" \
+              -f body="$(cat impact_comment.md)"
+            # concurrent runs may have raced in duplicates — keep the LOWEST id
+            for cid in $(echo "$ids" | tail -n +2); do
+              gh api -X DELETE "repos/${{ github.repository }}/issues/comments/$cid" || true
+            done
+          else
+            gh issue comment "$ISSUE_NUMBER" --body-file impact_comment.md
+          fi
+
+      - name: Mark the report stale on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
         run: |
           marker='<!-- agent-impact -->'
           cid=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
                   --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" \
-                | head -n1)
+                | sort -n | head -n1)
           if [ -n "$cid" ]; then
+            old=$(gh api "repos/${{ github.repository }}/issues/comments/$cid" --jq .body)
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$cid" \
-              -f body="$(cat impact_comment.md)"
-          else
-            gh issue comment "$ISSUE_NUMBER" --body-file impact_comment.md
+              -f body="$old
+
+> [!WARNING]
+> impact report FAILED for ${{ github.sha }} — the content above may be stale." || true
           fi

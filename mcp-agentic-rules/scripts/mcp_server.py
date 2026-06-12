@@ -468,7 +468,7 @@ class MCPServer:
             if not d or "timestamp" not in d:
                 continue
             age = int(_t.time() - d["timestamp"])
-            mark = "ACTIVE" if age < 120 else "stale"
+            mark = "ACTIVE" if age < ac.PRESENCE_FRESH_SECONDS else "stale"
             lines.append(f"  {f.stem:<20} [{mark}] {d.get('current_task', '?')[:50]} "
                          f"({age}s ago) @{d.get('workdir', '?')}")
         lines.append("-- leases --")
@@ -530,14 +530,13 @@ class MCPServer:
     def tool_collab_message(self, args: dict) -> str:
         ac, _, who = self._collab_ctx(args)
         recipient = args.get("recipient")
-        if recipient:
-            from . import agent_comms
-            os.environ["AGENT_IDENTITY"] = who
-            agent_comms.send_message(str(recipient), "note", {"text": str(args.get("text", ""))})
-            return "sent to %s" % recipient
         from . import agent_comms
-        os.environ["AGENT_IDENTITY"] = who
-        msgs = agent_comms.listen_for_messages()
+        if recipient:
+            # explicit sender param — never mutate process env for identity
+            agent_comms.send_message(str(recipient), "note",
+                                     {"text": str(args.get("text", ""))}, sender=who)
+            return "sent to %s" % recipient
+        msgs = agent_comms.listen_for_messages(identity=who)
         return _cap("\n".join(f"[{m['from']}] ({m['type']}) {m['content']}"
                               for m in msgs) or "(empty)")
 

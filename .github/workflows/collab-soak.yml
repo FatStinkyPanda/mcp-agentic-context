@@ -1,0 +1,72 @@
+# Nightly 100-agent soak: the headline claim, literally — 100 concurrent
+# agent processes hammering one collab store with forced lease churn, on both
+# OSes. Failures on the schedule open a `swarm-regression` issue.
+#
+# NOTE: GitHub disables scheduled workflows after ~60 days of repository
+# inactivity — re-enable from the Actions tab if the repo went quiet.
+# Hosted runners serialize heavily, so the soak measures CORRECTNESS under
+# contention, not timing.
+name: collab-soak
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      agents:
+        description: 'concurrent agent processes'
+        default: '100'
+      iters:
+        description: 'iterations per agent'
+        default: '40'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: collab-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 100-agent hammer swarm
+        env:
+          MCP_NSYNC_AUTOSYNC: '0'
+        shell: bash
+        run: >
+          python mcp-agentic-rules/scripts/collab_swarm.py run
+          --agents "${{ github.event.inputs.agents || '100' }}"
+          --iters "${{ github.event.inputs.iters || '40' }}"
+          --hammer --keep --json | tee swarm-report.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-report-${{ matrix.os }}
+          path: swarm-report.json
+
+      - name: Open a regression issue (scheduled failures only)
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue create \
+            --title "swarm regression: nightly soak failed on ${{ matrix.os }}" \
+            --label swarm-regression \
+            --body "Nightly 100-agent soak failed on ${{ matrix.os }} (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). Download the swarm-report artifact for the failed invariants." \
+            || true

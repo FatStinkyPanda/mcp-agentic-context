@@ -44,8 +44,10 @@ def save_state(state: dict, root: Path):
     path = state_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     state["updated"] = datetime.utcnow().isoformat() + "Z"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    # Shared across every agent session on the project — atomic replace so a
+    # concurrent reader never sees a torn document.
+    from scripts.agent_collab import atomic_write_json
+    atomic_write_json(path, state)
 
 
 def render(state: dict) -> str:

@@ -1,21 +1,31 @@
-# On-PR impact: analyze the diff with this package's own impact engine and keep
-# one upserted comment on the PR — importers, transitive dependents, affected
-# tests, plus a conflict radar against open in-progress issues so a PR that
-# lands in the middle of another agent's checkout is flagged before merge.
+# On-PR impact: analyze the diff with this package's own impact engine and
+# keep ONE upserted comment on the PR — importers, transitive dependents,
+# affected tests, plus a conflict radar against open in-progress issues so a
+# PR landing in the middle of another agent's checkout is flagged before merge.
 name: agent-pr-impact
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR to (re)analyze'
+        required: true
 
 permissions:
   contents: read
   issues: read
   pull-requests: write
 
+concurrency:
+  group: pr-impact-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
 jobs:
   impact:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,27 +35,51 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Resolve the PR head and base
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            base=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)
+            gh pr checkout "$PR_NUMBER"
+          else
+            base="${{ github.base_ref }}"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
       - name: Build the impact report
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python mcp-agentic-rules/scripts/impact_report.py \
-            --diff "origin/${{ github.base_ref }}...HEAD" \
+            --diff "origin/${{ steps.pr.outputs.base }}...HEAD" \
             --title "Impact of this PR's diff" --radar > impact_comment.md
           cat impact_comment.md
 
-      - name: Upsert the report comment
+      - name: Upsert the report comment (self-healing dedupe)
+        # fork PRs get a read-only token — publish to the step summary instead
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         run: |
           marker='<!-- agent-impact -->'
-          cid=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+          ids=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
                   --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" \
-                | head -n1)
-          if [ -n "$cid" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$cid" \
+                | sort -n)
+          keep=$(echo "$ids" | head -n1)
+          if [ -n "$keep" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$keep" \
               -f body="$(cat impact_comment.md)"
+            for cid in $(echo "$ids" | tail -n +2); do
+              gh api -X DELETE "repos/${{ github.repository }}/issues/comments/$cid" || true
+            done
           else
             gh pr comment "$PR_NUMBER" --body-file impact_comment.md
           fi
+
+      - name: Publish to the step summary (fork PRs)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: cat impact_comment.md >> "$GITHUB_STEP_SUMMARY"

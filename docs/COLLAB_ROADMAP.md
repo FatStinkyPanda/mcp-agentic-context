@@ -3,6 +3,48 @@
 **The user's standing directive for this project:** make multi-agent collaboration first-class
 and as powerful as possible — including deep GitHub integration (issues, tasks, projects) and
 automated workflows that auto-detect the impact of any issue/task an agent checks out.
+**Extended 2026-06-11:** support 100 CONCURRENT AGENTS per project (including many on one
+device), atomic primitives throughout, and E2E testing expected for every commit.
+
+## THE SCALE TIER — SHIPPED 2026-06-11 (Quasar)
+Selftest 35/35 green; swarm invariants proven at 16 processes per commit (CI), 100 nightly.
+
+- **Atomic store discipline** — every write is O_EXCL create / temp+`os.replace`
+  (`atomic_write_json`) / rename-to-unique-tombstone (`_cas_take`); a write-discipline test
+  greps the source so truncating writes can never regress. `_read_json` retries transient
+  Windows sharing violations: None ⇔ absent-or-corrupt, never mid-write.
+- **Fenced leases** — monotonic fence per acquisition (sidecar high-water mark survives
+  releases), incarnation-checked renew, `lease valid --fence N` before irreversible acts,
+  corrupt-lease recovery (no permanent deadlock), break via take-verify-restore (a live
+  owner's lease is never silently destroyed), full-jitter waits (no thundering herd).
+- **Seats: same-device multi-agent** — `.mcp/seat.json` binds workdir→call-sign (create-once
+  O_EXCL); `identity()` resolves env > seat > hostname; `collab seat new <cs>` provisions a
+  git-worktree seat in one command; `collab join` = seat + heartbeat + engine probe + status.
+  Cross-workdir use of one identity is REFUSED at the lease/claim/work layer.
+- **Transactional checkouts** — work records go pending→active with rollback on gh failure;
+  a 5-line label guard refuses GitHub-side foreign checkouts (cross-machine window).
+- **Sharded journal** — per-writer segments (`journal/<id>.<pid>.ndjson`, single O_APPEND
+  syscall per event), merged bounded tails, unique-rename rotation, torn lines skipped.
+- **Maildir mailboxes** — per-recipient dirs, claim-by-rename consumption (unique claim
+  names: deterministic rename destinations are NOT a CAS on Windows — empirically two
+  concurrent renames to one destination can both report success), legacy layout read forever.
+- **Janitor GC** — `collab gc` + opportunistic election via the `janitor` lease from
+  `status`; bounded reaping of stale presence/claims/orphans/strays; per-store invariant.
+- **Swarm harness** — `collab swarmtest`: N real OS processes (spawn-safe, watchdogged)
+  prove SWARM-MUTEX (no lost increments, no double-occupancy, fencing under forced expiry),
+  SWARM-JRN (exactly-once, gap-free, zero torn), SWARM-CLM/WRK (single winner), SWARM-COL
+  (collision detection). pytest markers `swarm`/`soak`; 100-agent soak nightly.
+- **E2E per commit** — pre-commit hook: collab E2E gate (no tree mutation); pre-push hook:
+  selftest + full suite + 6-process swarm + security; CI (`ci.yml`): selftest + suite +
+  16-process swarm on ubuntu AND windows (required contexts pinned by
+  `REQUIRED_CHECK_CONTEXTS`); `collab-soak.yml`: nightly 100-agent hammer with
+  auto-filed `swarm-regression` issues.
+
+Remaining from the scale blueprint (follow-up order): GitHub label-removal CAS + `work
+verify` (cross-machine atomic claim arbitration), `work submit`/`work land` PR landing path,
+`collab github-setup` (labels + master ruleset requiring the CI contexts), issue forms +
+shared parser, shared gh issue cache + rate-limit penalty gate, reconciler workflow
+(seed/dedupe), `work next` conflict-aware auto-assignment.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):
@@ -63,7 +105,10 @@ stale state must self-heal; every capability gets a selftest; file formats are c
 the repo carries the knowledge (per-session memory does not transfer).
 
 ## Working agreements for sessions on THIS repo
-- Join the collab scope: `python mcp-agentic-rules/mcp.py collab status --project mcp-agentic-context --as <callsign>`
-  (one workdir = one agent; heartbeat + journal your intents).
+- Join the collab scope: `python mcp-agentic-rules/mcp.py collab join <callsign> --project mcp-agentic-context`
+  (one workdir = one agent — the seat file enforces it; heartbeat + journal your intents).
 - Serialize pushes to master with the `git-commit` lease on the `mcp-agentic-context` scope.
-- `mcp collab selftest` must stay green; extend it with every new collab capability.
+- `mcp collab selftest` AND `mcp collab swarmtest` must stay green; extend them with every
+  new collab capability. The hooks + CI enforce both on every commit — never bypass them.
+- The store file formats are contracts (fence sidecars, journal segments, seat files,
+  maildir names documented above) — zero-dep clients read these files directly.

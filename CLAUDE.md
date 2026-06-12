@@ -7,10 +7,13 @@
 > for the full registry.
 
 > **ACTIVE PRIORITY (2026-06-11, from the user): make multi-agent collab FIRST-CLASS —
-> GitHub-native (issues/tasks checked out like leases) + automated impact workflows.
-> The roadmap, current state, and working agreements: `docs/COLLAB_ROADMAP.md`. Sessions
-> developing THIS repo join the collab scope `mcp-agentic-context` (one workdir = one agent)
-> and keep `mcp collab selftest` green.**
+> GitHub-native (issues/tasks checked out like leases) + automated impact workflows +
+> 100-concurrent-agent scale (atomic fenced primitives, same-device worktree seats, E2E
+> testing on every commit). The roadmap, current state, and working agreements:
+> `docs/COLLAB_ROADMAP.md`. Sessions developing THIS repo join via
+> `mcp collab join <callsign> --project mcp-agentic-context` (one workdir = one agent —
+> seats enforce it) and keep `mcp collab selftest` AND `mcp collab swarmtest` green.
+> Hooks + CI gate every commit; never bypass them.**
 
 ---
 

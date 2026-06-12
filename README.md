@@ -343,13 +343,24 @@ running multiple Claude sessions against one Unreal Engine project.
 ### Same-project collaboration (`collab`)
 
 ```bash
-# THE one view: active agents (+ workdirs), exclusive leases, claims, journal tail
+# JOIN THE TEAM in one command: binds THIS workdir to your call-sign (a SEAT),
+# verifies the engine end-to-end, and prints who is doing what.
+python mcp-agentic-rules/mcp.py collab join forge
+
+# More agents on the SAME device? Provision each its own git-worktree seat:
+python mcp-agentic-rules/mcp.py collab seat new ember     # ../<repo>-ember, pre-seated
+
+# THE one view: active agents (+ workdirs), exclusive leases, claims, checked-out
+# issues + conflict radar, journal tail
 python mcp-agentic-rules/mcp.py collab status --project myproj --as forge
 
-# Exclusive TTL'd lease on a contended resource (an editor seat, build rights,
-# the git-commit window). Atomic; re-entrant for the owner; STALE leases auto-break
-# so a crashed session never deadlocks the team. --wait polls until free.
+# Exclusive FENCED lease on a contended resource (an editor seat, build rights,
+# the git-commit window). Atomic O_EXCL; re-entrant for the owner; STALE and even
+# CORRUPT leases auto-break so a crashed session never deadlocks the team.
+# Acquiring prints fence=N — before any irreversible action, prove you still hold
+# THAT incarnation (a paused/zombie agent can never silently keep writing):
 python mcp-agentic-rules/mcp.py collab lease acquire editor --as forge --note "verifying"
+python mcp-agentic-rules/mcp.py collab lease valid editor --fence 3 --as forge
 python mcp-agentic-rules/mcp.py collab lease release editor --as forge
 
 # Advisory ownership of source areas (no conflicting authorship)
@@ -369,17 +380,35 @@ python mcp-agentic-rules/mcp.py collab journal tail 20
 
 # Onboarding an additional agent? It runs:
 python mcp-agentic-rules/mcp.py collab onboard     # prints the full join-the-team procedure
-python mcp-agentic-rules/mcp.py collab selftest    # 12-check engine verification (offline)
+python mcp-agentic-rules/mcp.py collab selftest    # 35-check engine verification (throwaway store)
+
+# PROVE the concurrency story: N real OS processes hammering one store —
+# lease mutual exclusion, fencing under forced expiry, journal exactly-once,
+# claim CAS, checkout single-winner. Runs per-push (hooks), per-commit (CI,
+# 16 processes) and nightly at 100 agents.
+python mcp-agentic-rules/mcp.py collab swarmtest --agents 16 --hammer
 ```
 
-**The identity rule:** one working directory = one agent. Heartbeats carry the workdir, and two
-live sessions beating one identity from different directories trigger a loud IDENTITY COLLISION
-warning — give each session its own checkout (`git worktree add`) and call-sign. The store is
-plain files under `~/.mcp/nsync/.nsync_agents/collab/<project>/` — any tool can speak it, and
-the MCP server exposes it as `collab_status` / `collab_lease` / `collab_journal` /
-`collab_message` / `collab_claim` / `collab_work` tools. Recommended lease law for code
-projects: a live tool/editor seat (its holder is the *pilot*), `rebuild`, `git-commit` (hold
-while rebase+push), `bench`.
+**The identity rule:** one working directory = one agent, bound by a seat file
+(`.mcp/seat.json`) that `identity()` resolves ahead of the hostname fallback — so ten
+sessions on one laptop can never silently merge into one identity. Cross-workdir use of a
+seated identity is REFUSED at the lease/claim/work layer (structural enforcement, not
+etiquette), and heartbeats detect both collision shapes (same identity from two workdirs;
+two concurrent sessions in one workdir). The store is plain files under
+`~/.mcp/nsync/.nsync_agents/collab/<project>/` — any tool can speak it, and the MCP server
+exposes it as `collab_status` / `collab_lease` / `collab_journal` / `collab_message` /
+`collab_claim` / `collab_work` tools. Recommended lease law for code projects: a live
+tool/editor seat (its holder is the *pilot*), `rebuild`, `git-commit` (hold while
+rebase+push), `bench`.
+
+**Atomicity guarantees** (all proven by `selftest` + `swarmtest` on every commit): every
+store write is an O_EXCL create, an atomic temp+rename replace, or a rename-to-unique-
+tombstone take — readers never see partial JSON, exactly one contender wins any CAS, and
+removals verify what they removed (restore-on-mismatch). Leases carry monotonic **fence
+numbers** (Kleppmann-style) with a sidecar high-water mark, so a zombie holder that lost
+its lease is structurally unable to pass `lease valid` before a destructive act. Stale
+state self-heals: a janitor (elected via its own lease) reaps dead presence, orphaned
+claims, abandoned checkouts, and stray temp files, bounded per pass.
 
 **GitHub-native checkout (`collab work`):** `work start` assigns the issue, labels it
 `in-progress` + `agent:<callsign>`, creates the matching claim (file paths extracted from the

@@ -196,14 +196,19 @@ CI/CD:
     pipeline [--gitlab]         Generate pipeline
 
 Multi-Agent Collaboration:
+    collab join [callsign]      Take a seat in THIS workdir + verify engine + read the room
+    collab seat init|new|status One workdir = one agent; `new` provisions a worktree seat
     collab status               Agents + leases + claims + work + journal in one view
-    collab lease acquire <res>  Exclusive TTL'd lease (editor/build/git-commit/...)
-    collab lease release|renew|break|status <res>
+    collab lease acquire <res>  Exclusive fenced lease (prints fence=N; --wait, --ttl)
+    collab lease release|renew|break|status|valid <res> [--fence N]
     collab claim add <id> <pattern>  Advisory work-area ownership
     collab work list            Open GitHub issues + who has them checked out
     collab work start <issue#> [--branch]   Check OUT an issue (assign+label+claim+journal)
     collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
+    collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
+    collab selftest             35-check engine verification (throwaway store)
+    collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 
 Automation:

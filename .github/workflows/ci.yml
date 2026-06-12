@@ -1,14 +1,30 @@
+# The per-commit E2E gate: critical lint + full test suite + collab engine
+# selftest (isolated store) + a 16-process swarm proving the multi-agent
+# invariants (lease mutual exclusion, fencing, journal exactly-once, claim
+# CAS, checkout single-winner) on BOTH Windows and Linux.
+#
+# The two matrix contexts are REQUIRED checks; their names are pinned by
+# REQUIRED_CHECK_CONTEXTS in mcp-agentic-rules/scripts/agent_collab.py.
+# Renaming the job or matrix entries without updating that constant (and any
+# branch ruleset) hard-blocks all merging.
 name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master, main, 'agent/**' ]
   pull_request:
     branches: [ master, main ]
+  merge_group: {}
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +45,22 @@ jobs:
     - name: Critical lint (syntax errors and undefined names)
       run: flake8 mcp-agentic-rules --count --select=E9,F63,F7,F82 --show-source --statistics
 
+    - name: Collab engine selftest (isolated store)
+      env:
+        MCP_NSYNC_PATH: ${{ runner.temp }}/collab-store
+        AGENT_IDENTITY: ci-${{ matrix.os }}
+        MCP_NSYNC_AUTOSYNC: '0'
+      run: python mcp-agentic-rules/scripts/agent_collab.py selftest
+
     - name: Run test suite
       working-directory: mcp-agentic-rules
+      env:
+        MCP_NSYNC_AUTOSYNC: '0'
       run: pytest tests -q
+
+    - name: Swarm gate (16 concurrent agent processes)
+      working-directory: mcp-agentic-rules
+      env:
+        SWARM_AGENTS: '16'
+        MCP_NSYNC_AUTOSYNC: '0'
+      run: pytest tests/test_collab_e2e.py -q -m swarm

@@ -43,34 +43,89 @@ def get_telegram_inbox_dir() -> Path:
         inbox.mkdir(parents=True, exist_ok=True)
     return inbox
 
+def find_seat_file(start=None):
+    """Walk upward from start (default cwd) looking for .mcp/seat.json — the
+    per-workdir identity binding. Stops at the repo root (.git) or 10 parents.
+    The ONE seat-file locator; agent_collab's seat verbs use this too."""
+    cur = Path(start or Path.cwd()).resolve()
+    for _ in range(10):
+        p = cur / ".mcp" / "seat.json"
+        if p.is_file():
+            return p
+        if (cur / ".git").exists() or cur.parent == cur:
+            return None
+        cur = cur.parent
+    return None
+
+
+_seat_cache = {}
+
+
+def clear_seat_cache():
+    _seat_cache.clear()
+
+
 def get_hostname():
-    # Allow override for specifically identifying the IDE agent session
+    """Identity resolution: AGENT_IDENTITY env > workdir seat file > hostname.
+    The seat file is what lets MANY agents share one machine: each worktree
+    binds its own call-sign, so the hostname fallback (which would merge every
+    session on the device into one identity) only applies to unseated dirs."""
     identity = os.environ.get("AGENT_IDENTITY")
     if identity:
         return identity
-    return socket.gethostname()
+    key = str(Path.cwd())
+    if key not in _seat_cache:
+        ident = None
+        seat = find_seat_file()
+        if seat:
+            try:
+                ident = json.loads(seat.read_text(encoding="utf-8")).get("identity")
+            except Exception:
+                ident = None
+        _seat_cache[key] = ident
+    return _seat_cache[key] or socket.gethostname()
+
+
+def _collab():
+    """Lazy import (agent_collab imports this module at load time)."""
+    try:
+        from scripts import agent_collab
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        sys.modules.pop("scripts", None)   # purge a cached foreign 'scripts' pkg
+        from scripts import agent_collab
+    return agent_collab
+
+
+def _nsync_kick(min_interval: float = 15.0):
+    """Debounced, timeout-bounded NSync trigger. 100 agents heartbeating must
+    not each spawn an unbounded subprocess; honors MCP_NSYNC_AUTOSYNC=0."""
+    if os.environ.get("MCP_NSYNC_AUTOSYNC") == "0":
+        return
+    marker = get_comms_dir() / ".last_sync"
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < min_interval:
+            return
+        marker.touch()
+    except OSError:
+        pass
+    try:
+        mcp_py = Path(__file__).parents[1] / "mcp.py"
+        subprocess.run([sys.executable, str(mcp_py), "nsync", "sync"],
+                       capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
 
 class AgentPresence:
     """Manages local agent presence and heartbeats."""
     @staticmethod
     def update(status="active", task="monitoring"):
-        presence_file = get_comms_dir() / f"{get_hostname()}.json"
-        data = {
-            "hostname": get_hostname(),
-            "timestamp": time.time(),
-            "status": status,
-            "current_task": task,
-            "last_seen": time.ctime()
-        }
-        with open(presence_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-        # Trigger NSync to propagate the heartbeat
-        try:
-            mcp_py = Path(__file__).parents[1] / "mcp.py"
-            subprocess.run([sys.executable, str(mcp_py), "nsync", "sync"], capture_output=True)
-        except:
-            pass
+        # ONE presence writer: agent_collab.heartbeat (atomic write, workdir +
+        # session stamped, collision detection). This wrapper only adds the
+        # debounced NSync propagation.
+        data, _ = _collab().heartbeat(get_hostname(), status, task)
+        _nsync_kick()
         return data
 
     @staticmethod
@@ -82,54 +137,103 @@ class AgentPresence:
                 try:
                     with open(f, "r") as pf:
                         remote_status[f.stem] = json.load(pf)
-                except:
+                except Exception:
                     pass
         return remote_status
 
-def send_message(recipient: str, msg_type: str, content: dict):
-    """Sends an encrypted-in-transit message via NSync mailbox."""
-    mailbox = get_mailbox_dir()
-    msg_id = int(time.time() * 1000)
-    msg_file = mailbox / f"{recipient}_{get_hostname()}_{msg_id}.json"
-
+def send_message(recipient: str, msg_type: str, content: dict, sender: str = None):
+    """Deliver a message into the recipient's OWN directory with a
+    maildir-unique name (time_ns + pid + random): two same-millisecond sends
+    can never overwrite each other, and recipient names can never prefix-match
+    another agent's mail (the legacy flat `a_b_id.json` layout let agent 'a'
+    steal mail addressed to 'a_b')."""
+    sender = sender or get_hostname()
+    rdir = get_mailbox_dir() / recipient
+    rdir.mkdir(parents=True, exist_ok=True)
+    msg_file = rdir / ("%s.%d.%d.%s.json"
+                       % (sender, time.time_ns(), os.getpid(), os.urandom(2).hex()))
     payload = {
-        "id": msg_id,
-        "from": get_hostname(),
+        "id": time.time_ns() // 1_000_000,
+        "from": sender,
         "to": recipient,
         "type": msg_type,
         "content": content,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "v": 2,
     }
-
-    with open(msg_file, "w") as f:
+    with open(msg_file, "x", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     print(f"[COMMS] Message sent to {recipient}: {msg_type}")
-
-    # Trigger NSync to propagate the message
-    try:
-        mcp_py = Path(__file__).parents[1] / "mcp.py"
-        subprocess.run([sys.executable, str(mcp_py), "nsync", "sync"], capture_output=True)
-    except:
-        pass
+    _nsync_kick()
     return msg_file
 
-def listen_for_messages():
-    """Polls for messages addressed to this host."""
+
+def listen_for_messages(identity: str = None):
+    """Poll + consume this agent's mail. Consumption is CLAIM-BY-RENAME:
+    exactly one concurrent consumer wins each message (rename is the CAS),
+    so two processes in one seat can poll without double-processing.
+    Reads both the v2 per-recipient directory and the legacy flat layout."""
+    me = identity or get_hostname()
     mailbox = get_mailbox_dir()
-    hostname = get_hostname()
-
     messages = []
-    for f in mailbox.glob(f"{hostname}_*.json"):
+    candidates = []
+    mydir = mailbox / me
+    if mydir.is_dir():
+        candidates += sorted(mydir.glob("*.json"))
+    candidates += sorted(mailbox.glob(f"{me}_*.json"))     # legacy flat layout
+    for f in candidates:
+        # The claim destination MUST be unique per claimer: empirically on
+        # Windows two concurrent renames of one src to the SAME dst can both
+        # report success — deterministic destinations are not a CAS there.
+        claimed = f.with_name("%s.claimed.%d.%s"
+                              % (f.name, os.getpid(), os.urandom(3).hex()))
         try:
-            with open(f, "r") as mf:
-                msg = json.load(mf)
-                messages.append(msg)
-            # Mark as read/processed by deleting
-            f.unlink()
-        except Exception as e:
-            print(f"[WARN] Failed to read message {f}: {e}")
-
+            os.replace(f, claimed)
+        except (FileNotFoundError, PermissionError, OSError):
+            continue            # another consumer won, or a transient Windows lock
+        try:
+            msg = json.loads(claimed.read_text(encoding="utf-8"))
+        except Exception:
+            try:
+                claimed.unlink()
+            except OSError:
+                pass
+            continue
+        if f.parent == mailbox and msg.get("to") not in (None, me):
+            # legacy prefix-glob caught someone else's mail — restore untouched
+            try:
+                os.replace(claimed, f)
+            except OSError:
+                pass
+            continue
+        messages.append(msg)
+        try:
+            claimed.unlink()
+        except OSError:
+            pass
     return messages
+
+def _claim_file(f: Path):
+    """Claim-by-rename consumption: exactly one concurrent consumer gets the
+    message. The destination embeds pid+random because deterministic rename
+    destinations are NOT a CAS on Windows (two renames can both 'succeed').
+    Returns the parsed payload or None."""
+    claimed = f.with_name("%s.claimed.%d.%s"
+                          % (f.name, os.getpid(), os.urandom(3).hex()))
+    try:
+        os.replace(f, claimed)
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    try:
+        msg = json.loads(claimed.read_text(encoding="utf-8"))
+    except Exception:
+        msg = None
+    try:
+        claimed.unlink()
+    except OSError:
+        pass
+    return msg
+
 
 def listen_for_telegram_messages():
     """Polls for Telegram messages. Background agents wait for Antigravity priority."""
@@ -141,12 +245,9 @@ def listen_for_telegram_messages():
 
     # Priority 1: Messages directly for me (based on AGENT_IDENTITY)
     for f in inbox.glob(f"{agent_identity}_*.json"):
-        try:
-            with open(f, "r") as mf:
-                msg = json.load(mf)
-                messages.append(msg)
-            f.unlink()
-        except: pass
+        msg = _claim_file(f)
+        if msg:
+            messages.append(msg)
 
     # Skip fallback logic if I AM Antigravity (I already checked)
     if agent_identity.lower() == "antigravity":
@@ -156,33 +257,29 @@ def listen_for_telegram_messages():
     # Background agents (Quasar/wizardpanda) only take Antigravity messages if stale
     for f in inbox.glob("Antigravity_*.json"):
         try:
-            # Check how old the message is
-            stats = f.stat()
-            age = time.time() - stats.st_mtime
-
-            # If the IDE brain hasn't taken it in 60s, a background agent can help
-            if age > 60:
-                # But only the PRIMARY should handle the fallback to avoid double-response
-                is_primary = False
-                if hostname.lower() == "quasar":
+            age = time.time() - f.stat().st_mtime
+        except OSError:
+            continue
+        # If the IDE brain hasn't taken it in 60s, a background agent can help
+        if age > 60:
+            # The claim-by-rename IS the double-response arbiter; the primary
+            # ordering below only decides who tries first.
+            is_primary = False
+            if hostname.lower() == "quasar":
+                is_primary = True
+            else:
+                remotes = AgentPresence.get_remote_status()
+                quasar_active = False
+                for h, d in remotes.items():
+                    if h.lower() == "quasar" and time.time() - d.get('timestamp', 0) < 120:
+                        quasar_active = True
+                if not quasar_active:
                     is_primary = True
-                else:
-                    # If I'm on wizardpanda, I only take it if Quasar is offline
-                    remotes = AgentPresence.get_remote_status()
-                    quasar_active = False
-                    for h, d in remotes.items():
-                         if h.lower() == "quasar" and time.time() - d.get('timestamp', 0) < 120:
-                             quasar_active = True
-                    if not quasar_active:
-                        is_primary = True
-
-                if is_primary:
-                    with open(f, "r") as mf:
-                        msg = json.load(mf)
-                        messages.append(msg)
-                    f.unlink()
+            if is_primary:
+                msg = _claim_file(f)
+                if msg:
+                    messages.append(msg)
                     print(f"[COMMS] Handled Antigravity fallback message (Age: {int(age)}s)")
-        except: pass
 
     return messages
 
@@ -193,10 +290,9 @@ def notify_user_telegram(text: str):
     if not outbox.exists():
         outbox.mkdir(parents=True, exist_ok=True)
 
-    msg_id = int(time.time() * 1000)
-    msg_file = outbox / f"out_{msg_id}.json"
-
-    with open(msg_file, "w") as f:
+    msg_file = outbox / ("out_%d_%d_%s.json"
+                         % (time.time_ns(), os.getpid(), os.urandom(2).hex()))
+    with open(msg_file, "x", encoding="utf-8") as f:
         json.dump({"text": text, "from": get_hostname(), "timestamp": time.time()}, f, indent=2)
     print(f"[COMMS] Notification queued for Telegram: {text[:50]}...")
 
@@ -221,9 +317,10 @@ def show_status():
     remotes = AgentPresence.get_remote_status()
     if not remotes:
         print("No remote agents detected yet.")
+    fresh = _collab().PRESENCE_FRESH_SECONDS
     for host, data in remotes.items():
         age = time.time() - data['timestamp']
-        active_str = "[ACTIVE]" if age < 60 else "[OFFLINE/STALE]"
+        active_str = "[ACTIVE]" if age < fresh else "[OFFLINE/STALE]"
         print(f"Host:   {host} {active_str}")
         print(f"Status: {data['status']}")
         print(f"Task:   {data['current_task']}")
@@ -351,7 +448,7 @@ def main():
         remotes = AgentPresence.get_remote_status()
         if args[0] in remotes:
             age = time.time() - remotes[args[0]]['timestamp']
-            if age < 60:
+            if age < _collab().PRESENCE_FRESH_SECONDS:
                 print(f"[OK] {args[0]} is ALIVE (Age: {int(age)}s)")
                 return 0
         print(f"[FAIL] {args[0]} is UNREACHABLE or STALE")
