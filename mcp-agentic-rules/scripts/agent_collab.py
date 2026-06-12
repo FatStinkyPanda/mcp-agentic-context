@@ -153,7 +153,7 @@ def atomic_write_json(path: Path, obj, fsync: bool = False) -> None:
         if fsync:
             f.flush()
             os.fsync(f.fileno())
-    for attempt in range(5):
+    for attempt in range(10):       # loaded-machine budget (readers + AV hold the dest)
         try:
             os.replace(tmp, path)
             return
@@ -200,14 +200,16 @@ def _now() -> float:
 def _read_json(p: Path):
     """None ⇔ absent or genuinely corrupt — never mid-write, never a transient
     Windows sharing violation (those are retried: a reader's open() racing an
-    os.replace can briefly be denied)."""
-    for attempt in range(5):
+    os.replace — or an AV/indexer touch — can briefly be denied). The budget is
+    sized for LOADED machines: a 100-agent box stretches collision windows far
+    beyond what an idle dev box ever shows (flaked on 2-core CI at 5×5ms)."""
+    for attempt in range(8):
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
         except PermissionError:
-            time.sleep(0.005 * (attempt + 1))
+            time.sleep(0.004 * (attempt + 1) * (1 + random.random()))
         except Exception:
             return None
     return None
@@ -1338,8 +1340,10 @@ def work_submit(project: str, issue, who: str, draft: bool = False, runner=None)
         have = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
                               capture_output=True, text=True, timeout=15)
         if have.returncode == 0:
+            # generous timeout: pre-push hooks legitimately run the FULL E2E
+            # gate (selftest + suite + swarm + security ≈ minutes)
             pushed = subprocess.run(["git", "push", "-u", "origin", branch],
-                                    capture_output=True, text=True, timeout=120)
+                                    capture_output=True, text=True, timeout=900)
             if pushed.returncode != 0:
                 return False, "git push failed: %s" % (pushed.stderr or pushed.stdout).strip()
     except Exception as e:

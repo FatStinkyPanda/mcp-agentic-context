@@ -37,6 +37,27 @@ Originally built to accelerate ML research and experimentation workflows, it has
 
 ---
 
+## Staying Up To Date
+
+Installed copies keep themselves current with the latest GitHub release:
+
+```bash
+python mcp-agentic-rules/mcp.py update --check    # newer release available? (cached 24h)
+python mcp-agentic-rules/mcp.py update            # download + backup + verify + rollback-on-failure
+python mcp-agentic-rules/mcp.py update --status   # versions + auto-update config
+```
+
+Session-start commands (`state`, `autocontext`, `doctor`, the `collab_status` MCP tool)
+print a one-line `[UPDATE]` notice when a newer release exists — so AI agents working on
+your project SEE updates where they already look. **Auto-update is enabled by default**
+(opt out with `update --disable-auto`): the notice authorizes agents to apply the update
+themselves. Every update backs up the current install, overlays the new release, and makes
+the NEW engine pass its own 60-check selftest in a throwaway store before being accepted —
+any failure rolls back automatically. Junction/symlink installs update the canonical
+target, and MCP git hooks are refreshed afterwards.
+
+---
+
 ## What Is This?
 
 When an AI agent (Claude, Gemini, GPT-4, local LLM, etc.) works on a project with MCP Agentic Context installed, it gains access to:

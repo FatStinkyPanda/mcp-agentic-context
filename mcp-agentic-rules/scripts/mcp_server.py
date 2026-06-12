@@ -501,6 +501,13 @@ class MCPServer:
         for e in ac.journal_tail(project, 12):
             lines.append(f"  {e['ts']} {e['who']:<16} {e['event']:<20} "
                          f"{json.dumps(e['data'], ensure_ascii=False)[:90]}")
+        try:                       # agents see release updates where they look first
+            from . import updater
+            note = updater.notice()
+            if note:
+                lines.append(note)
+        except Exception:
+            pass
         return _cap("\n".join(lines))
 
     def tool_collab_lease(self, args: dict) -> str:
