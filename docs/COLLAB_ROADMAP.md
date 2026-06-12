@@ -60,11 +60,18 @@ issue — arms auto-merge behind the required CI checks, labels `state:review`, 
 one, reports conflicts. `work done` redirects to `land` when a submitted PR is open.
 At scale, agents never push master directly. Selftest 48/48.
 
-Remaining from the scale blueprint (follow-up order): `collab github-setup` (seed
-`state:available` + labels + master ruleset requiring the CI contexts — only NOW safe to
-apply, since the landing path exists), issue forms + shared parser, shared gh issue cache +
-rate-limit penalty gate, reconciler workflow (seed/dedupe), `work next` conflict-aware
-auto-assignment.
+**Repo provisioning — SHIPPED + APPLIED LIVE 2026-06-12:** `collab github-setup [--apply]`
+(dry-run default) creates the coordination labels, seeds `state:available` onto unlabeled
+open issues, and installs the `master-gate` ruleset: PR required, the two CI contexts
+pinned by `REQUIRED_CHECK_CONTEXTS` required + strict up-to-date, force-push/deletion
+blocked, admin break-glass bypass (the shared owner token stays unblocked). `--apply`
+REFUSES if the contexts don't match real check runs on the default branch — a typo can
+never hard-block all merging. Applied to THIS repo: ruleset id 17613013 active.
+Selftest 51/51.
+
+Remaining from the scale blueprint (follow-up order): issue forms + shared parser, shared
+gh issue cache + rate-limit penalty gate, reconciler workflow (seed/dedupe), `work next`
+conflict-aware auto-assignment.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):

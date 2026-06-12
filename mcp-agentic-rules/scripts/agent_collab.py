@@ -54,6 +54,8 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
   status                              (presence + leases + claims + work + journal, one view)
   heartbeat [STATUS] [TASK]           (presence beat — also detects identity collisions)
   gc [--dry-run]                      (janitor pass: reap stale presence/claims/records/strays)
+  github-setup [--apply]              (provision labels + state:available seeding + the
+                                       master ruleset requiring the CI checks; dry-run default)
   onboard                             (print the complete join-the-team procedure for an agent)
   selftest                            (verify the whole engine inside a throwaway store)
   swarmtest [--agents N] [--iters K] [--hammer] [--keep] [--json]
@@ -736,6 +738,8 @@ def _fake_gh_apply(state: dict, gh_args):
               "assignees": [], "labels": [{"name": x} for x in v.get("labels", [])]}
              for k, v in issues.items() if v.get("state", "open") == "open"])
     if gh_args[:1] == ["label"]:
+        if gh_args[1:2] == ["create"] and len(gh_args) > 2:
+            state.setdefault("labels_created", []).append(gh_args[2])
         return True, ""
     if gh_args[:2] == ["pr", "create"]:
         prs = state.setdefault("prs", {})
@@ -776,12 +780,37 @@ def _fake_gh_apply(state: dict, gh_args):
     if gh_args[:2] == ["pr", "update-branch"]:
         return True, ""
     if gh_args[:1] == ["api"]:
-        # modeled: label-CAS DELETE + remote-branch DELETE
+        # modeled: label-CAS DELETE, remote-branch DELETE, rulesets, check-runs
         method = gh_args[gh_args.index("-X") + 1] if "-X" in gh_args else "GET"
+        path_arg = next((a for a in gh_args[1:] if not a.startswith("-")
+                         and a not in ("GET", "POST", "PUT", "DELETE")), gh_args[-1])
         mref = re.search(r"/git/refs/heads/(.+)$", gh_args[-1])
         if method == "DELETE" and mref:
             state.setdefault("deleted_refs", []).append(mref.group(1))
             return True, ""
+        if "/rulesets" in path_arg:
+            rulesets = state.setdefault("rulesets", [])
+            if method == "GET":
+                return True, json.dumps(rulesets)
+            payload = {}
+            if "--input" in gh_args:
+                payload = json.loads(Path(gh_args[gh_args.index("--input") + 1])
+                                     .read_text(encoding="utf-8"))
+            if method == "POST":
+                payload["id"] = len(rulesets) + 1
+                rulesets.append(payload)
+                return True, json.dumps(payload)
+            if method == "PUT":
+                rid = int(path_arg.rsplit("/", 1)[-1])
+                for i, r in enumerate(rulesets):
+                    if r.get("id") == rid:
+                        payload["id"] = rid
+                        rulesets[i] = payload
+                        return True, json.dumps(payload)
+                return False, "HTTP 404: ruleset not found"
+        if "/check-runs" in path_arg:
+            return True, json.dumps({"check_runs": [{"name": n}
+                                     for n in state.get("check_runs", [])]})
         m = re.search(r"/issues/(\d+)/labels/(.+)$", gh_args[-1])
         if method == "DELETE" and m:
             k, label = m.group(1), m.group(2).replace("%3A", ":").replace("%3a", ":")
@@ -1338,6 +1367,111 @@ def work_tick(project: str, issue, item, who: str, runner=None):
         return False, err
     journal_log(project, who, "work.tick", {"issue": issue, "item": item, "text": line[:120]})
     return True, "ticked #%d item %d: %s" % (issue, item, line[:80])
+
+
+# ── github-setup (one-command repo provisioning for the work machinery) ──────────────────────
+SETUP_LABELS = (("in-progress", "FBCA04"), ("state:available", "0E8A16"),
+                ("state:review", "1D76DB"), ("swarm-regression", "B60205"))
+RULESET_NAME = "master-gate"
+
+
+def _ruleset_payload():
+    return {
+        "name": RULESET_NAME,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "pull_request", "parameters": {
+                "required_approving_review_count": 0,   # one shared login cannot self-review
+                "dismiss_stale_reviews_on_push": False,
+                "require_code_owner_review": False,
+                "require_last_push_approval": False,
+                "required_review_thread_resolution": False}},
+            {"type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": c} for c in REQUIRED_CHECK_CONTEXTS]}},
+        ],
+        # break-glass: repository admins bypass (RepositoryRole 5) — the owner
+        # stays unblocked; agents land through PRs + checks
+        "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole",
+                           "bypass_mode": "always"}],
+    }
+
+
+def github_setup(project: str, who: str, apply: bool = False, runner=None):
+    """Provision the repo for GitHub-native multi-agent work in one command:
+    create the coordination labels, seed `state:available` onto open issues
+    lacking a state, and install the master ruleset (PR + the REQUIRED CI
+    checks pinned by REQUIRED_CHECK_CONTEXTS, strict up-to-date policy).
+    DRY-RUN by default; --apply REFUSES if the required contexts don't match
+    real check runs on the default branch (a typo would block ALL merging).
+    Returns (ok, lines)."""
+    import tempfile
+    run = runner or GH_RUNNER
+    lines = []
+    plan = []
+    ok_l, issues = _gh_json(["issue", "list", "--state", "open", "--limit", "200",
+                             "--json", "number,title,labels"], runner=run)
+    if not ok_l:
+        return False, ["gh unavailable — github-setup needs the gh CLI: %s" % issues]
+    to_seed = []
+    for it in issues:
+        labs = {x.get("name", "") for x in it.get("labels", [])}
+        if not any(x == "in-progress" or x.startswith("state:") for x in labs):
+            to_seed.append(it.get("number"))
+    ok_r, rulesets = _gh_json(["api", "repos/{owner}/{repo}/rulesets"], runner=run)
+    existing = next((r for r in (rulesets if ok_r and isinstance(rulesets, list) else [])
+                     if r.get("name") == RULESET_NAME), None)
+    plan.append("labels: ensure %s" % ", ".join(n for n, _ in SETUP_LABELS))
+    plan.append("seed state:available onto %d open issue(s): %s"
+                % (len(to_seed), ", ".join("#%d" % n for n in to_seed[:10]) or "(none)"))
+    plan.append("%s ruleset '%s': require PR + checks %s (strict), block force-push/deletion,"
+                " admin break-glass bypass"
+                % ("UPDATE" if existing else "CREATE", RULESET_NAME,
+                   ", ".join(REQUIRED_CHECK_CONTEXTS)))
+    if not apply:
+        return True, ["[DRY-RUN] github-setup plan:"] + ["  - " + p for p in plan] + \
+                     ["run with --apply to execute"]
+    # refuse on context drift: the required contexts MUST match real check runs
+    ok_c, checks = _gh_json(["api", "repos/{owner}/{repo}/commits/HEAD/check-runs"],
+                            runner=run)
+    seen = {c.get("name", "") for c in (checks or {}).get("check_runs", [])} if ok_c else set()
+    missing = [c for c in REQUIRED_CHECK_CONTEXTS if c not in seen]
+    if missing:
+        return False, ["REFUSED: required check context(s) not found on the latest default-"
+                       "branch commit: %s" % ", ".join(missing),
+                       "requiring them would hard-block ALL merging. Fix ci.yml / "
+                       "REQUIRED_CHECK_CONTEXTS first (they must match exactly)."]
+    for name, color in SETUP_LABELS:
+        run(["label", "create", name, "--color", color, "--force"])
+    for n in to_seed:
+        run(["issue", "edit", str(n), "--add-label", "state:available"])
+    payload = _ruleset_payload()
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                     encoding="utf-8") as f:
+        json.dump(payload, f)
+        tmp_path = f.name
+    try:
+        if existing:
+            ok_w, out_w = run(["api", "-X", "PUT",
+                               "repos/{owner}/{repo}/rulesets/%d" % existing.get("id", 0),
+                               "--input", tmp_path])
+        else:
+            ok_w, out_w = run(["api", "-X", "POST", "repos/{owner}/{repo}/rulesets",
+                               "--input", tmp_path])
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    if not ok_w:
+        return False, ["ruleset write failed: %s" % out_w]
+    journal_log(project, who, "github.setup",
+                {"seeded": len(to_seed), "ruleset": "updated" if existing else "created"})
+    return True, ["[APPLIED] " + p for p in plan]
 
 
 # ── seats (same-device multi-agent identity) ──────────────────────────────────────────────────
@@ -1998,6 +2132,34 @@ def selftest():
               and "agent/selfA/issue-17" in state.get("deleted_refs", [])
               and any(e["event"] == "work.landed" for e in journal_tail(P, 10)))
 
+        # ---- github-setup: dry-run inert, apply idempotent, drift refused ----
+        state["issues"]["20"] = {"title": "Unlabeled", "url": "https://github.com/x/y/issues/20",
+                                 "body": "plain", "labels": [], "state": "open"}
+        pre_labels = list(state.get("labels_created", []))
+        pre_rules = list(state.get("rulesets", []))
+        gs_ok, gs_lines = github_setup(P, A, apply=False, runner=fake)
+        check("github-setup dry-run plans without mutating",
+              gs_ok and any("DRY-RUN" in line for line in gs_lines)
+              and state.get("labels_created", []) == pre_labels
+              and state.get("rulesets", []) == pre_rules
+              and state["issues"]["20"]["labels"] == [])
+        bad_ok, bad_lines = github_setup(P, A, apply=True, runner=fake)
+        check("github-setup --apply refuses on check-context drift",
+              not bad_ok and any("REFUSED" in line for line in bad_lines)
+              and not state.get("rulesets"))
+        state["check_runs"] = list(REQUIRED_CHECK_CONTEXTS)
+        ap_ok, _ = github_setup(P, A, apply=True, runner=fake)
+        ap2_ok, _ = github_setup(P, A, apply=True, runner=fake)
+        rs = state.get("rulesets", [])
+        ctxs = ({c["context"] for r in rs for rule in r.get("rules", [])
+                 if rule.get("type") == "required_status_checks"
+                 for c in rule["parameters"]["required_status_checks"]})
+        check("github-setup --apply seeds + creates ONE ruleset, idempotently",
+              ap_ok and ap2_ok and len(rs) == 1
+              and ctxs == set(REQUIRED_CHECK_CONTEXTS)
+              and "state:available" in state["issues"]["20"]["labels"]
+              and "state:available" in state.get("labels_created", []))
+
         # ---- seats ----
         wd1 = Path(tempfile.mkdtemp(prefix="seat1-", dir=store))
         s1_ok, s1 = seat_init("tst-alpha", workdir=wd1, project=P)
@@ -2417,6 +2579,12 @@ def main():
         mode = "would reap" if "--dry-run" in args else "reaped"
         print("[OK] gc %s: %s" % (mode, counts or "nothing"))
         return 0
+
+    if cmd == "github-setup":
+        ok, lines2 = github_setup(project, who, apply="--apply" in args)
+        for line in lines2:
+            print(line)
+        return 0 if ok else 1
 
     if cmd == "swarmtest":
         try:
