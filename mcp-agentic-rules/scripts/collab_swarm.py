@@ -74,7 +74,8 @@ def worker_main(a) -> int:
     if a.workdir:
         os.chdir(a.workdir)
     out = {"id": a.id, "role": a.role, "acks": 0, "violations": 0, "lost": 0,
-           "starved": 0, "wins": [], "blind": 0, "warnings": 0, "events": 0}
+           "starved": 0, "stomps": 0, "wins": [], "blind": 0, "warnings": 0,
+           "events": 0}
     if not _barrier_wait(sdir, a.id):
         return 3
     progress = sdir / "progress" / str(a.id)
@@ -97,15 +98,24 @@ def worker_main(a) -> int:
             if fence is None:
                 out["starved"] += 1
                 continue
-            ac.atomic_write_json(token, {"who": me})
+            ac.atomic_write_json(token, {"who": me, "fence": fence})
             if a.hammer and random.random() < 0.10:
                 time.sleep(a.ttl * 1.5)              # oversleep: lose the lease on purpose
             else:
                 time.sleep(random.uniform(0, 0.003))
             still, _ = ac.lease_valid(a.scope, "swarm-mutex", me, fence)
-            tok = (ac._read_json(token) or {}).get("who")
-            if still and tok != me:
-                out["violations"] += 1               # someone entered while we validly held
+            tok = ac._read_json(token) or {}
+            if still and tok.get("who") != me:
+                if int(tok.get("fence", -1)) >= fence:
+                    # a token from an EQUAL/HIGHER fence while we validly hold
+                    # = two simultaneous valid holders: true exclusion breach
+                    out["violations"] += 1
+                else:
+                    # a LOWER-fence token = the Kleppmann zombie write: an
+                    # expired holder's delayed write landed on our hold. The
+                    # lease layer cannot prevent this — fence-checking at the
+                    # resource (exactly what the counter protocol does) can.
+                    out["stomps"] += 1
             if still:                                # fenced write: only a VALID holder mutates
                 cur = ac._read_json(counter) or {"n": 0}
                 ac.atomic_write_json(counter, {"n": cur.get("n", 0) + 1})
@@ -282,8 +292,12 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                            "ok": counter == acks,
                            "detail": "counter=%d acks=%d lost=%d starved=%d"
                                      % (counter, acks, lost, sum(o["starved"] for o in outs))})
+            stomps = sum(o.get("stomps", 0) for o in outs)
             checks.append({"name": "SWARM-MUTEX-2 zero mutual-exclusion violations",
-                           "ok": viol == 0, "detail": "violations=%d" % viol})
+                           "ok": viol == 0,
+                           "detail": "violations=%d zombie_stomps=%d (stomps are the "
+                                     "expected delayed-write hazard, rejected by fenced "
+                                     "consumers)" % (viol, stomps)})
             if hammer:
                 checks.append({"name": "SWARM-MUTEX-3 hammer exercised lease loss",
                                "ok": lost > 0,
