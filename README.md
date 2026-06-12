@@ -1,25 +1,25 @@
 # MCP Agentic Context (formerly MCP Global Rules)
 
-> **AI Agent Enhancement & Unlimited Context Package** - 75 Scripts | 76 Commands | 6 Git Hooks | Offline-First Core
+> **AI Agent Enhancement & Unlimited Context Package** - 77 Scripts | 77 Commands | 6 Git Hooks | Offline-First Core
 
 [![CI](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml/badge.svg)](https://github.com/FatStinkyPanda/mcp-agentic-context/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.3.0-blue)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
+[![Release](https://img.shields.io/badge/release-v2.4.0-blue)](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 
 Created by **[FatStinkyPanda](https://github.com/FatStinkyPanda)**
 
-**Latest release: [v2.3.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)** -
-the update-era release: installed copies now keep themselves current (`mcp update` — backup,
-self-verify, auto-rollback; agents are notified at session start, auto-update enabled by
-default), and the GitHub-native work lifecycle is complete — issues checked out with an
-ATOMIC cross-machine claim, fleet self-assignment via `work next`, and landing through
-auto-merged pull requests behind required CI checks. Every feature in v2.3.0 was itself
-built through that lifecycle. On top of the v2.2 scale tier: 100-concurrent-agent-safe
-fenced primitives proven by a per-commit multi-process swarm and a nightly 100-agent soak,
-worktree seats, one-command repo provisioning — and the v2.0 line: multi-language semantic
-search (25+ languages), incremental auto-fresh indexing, a warm daemon, a native Model
-Context Protocol server for Claude Code/Cursor/Codex, and project-scoped memory.
+**Latest release: [v2.4.0](https://github.com/FatStinkyPanda/mcp-agentic-context/releases/latest)** -
+the blueprint-complete release: all 20 items of the 100-concurrent-agent scale blueprint are
+shipped. New: the swarm reconciler — a level-triggered GitHub Action that re-seeds claimable
+issues and dedupes racing comment families every 10 minutes, cleaning up what crashed agents
+leave behind. With it, the full loop stands: self-updating installs (notify at session start,
+auto-update default-on, backup + self-verify + rollback), atomic cross-machine issue checkout,
+fleet self-assignment (`work next`), gated PR landing with auto-merge, worktree seats for
+same-device fleets, fenced atomic primitives proven by a per-commit multi-process swarm and a
+nightly 100-agent soak — and the v2.0 line: multi-language semantic search (25+ languages),
+incremental auto-fresh indexing, a warm daemon, a native Model Context Protocol server for
+Claude Code/Cursor/Codex, and project-scoped memory.
 Full details in the [CHANGELOG](CHANGELOG.md).
 
 MCP Agentic Context is a drop-in AI agent enhancement system that installs into any project and gives every AI agent working on it a shared set of tools, memory, code analysis, security scanning, autonomous development workflows, and enforced quality gates. 

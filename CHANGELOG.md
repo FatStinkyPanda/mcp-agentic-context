@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.4.0 (2026-06-12)
+
+The blueprint-complete release: all 20 items of the 100-concurrent-agent
+scale blueprint are shipped. Selected by the fleet dispatcher itself
+(`work next --start` picked, claimed, and branched issue #2 with no human
+routing) and landed through the gated PR lifecycle.
+
+- SWARM RECONCILER (the closer of last resort): agent-reconcile.yml runs
+  every 10 minutes (+ manual dispatch + repository_dispatch[agent-sync],
+  singleton concurrency, GITHUB_TOKEN only — event-inert, separate rate
+  budget). swarm_reconcile.py reads everything in ONE batched GraphQL query,
+  then a LEVEL-TRIGGERED pure plan(): re-seed `state:available` onto open
+  issues that lost all coordination labels (crashed-checkout residue) and
+  dedupe agent-impact comment families keeping the lowest id. Mutations are
+  individually idempotent with an ndjson audit log; tests prove a reconciled
+  state re-plans to ZERO actions, dry-run never mutates, and human comments
+  always survive.
+- This release is the first delivered THROUGH the v2.3.0 update system:
+  v2.3.0 installs see the [UPDATE] notice at session start and (auto-update
+  default-on) apply it themselves — backup, new-engine selftest, rollback.
+
 ## v2.3.0 (2026-06-12)
 
 The update-era release: installed copies keep themselves current, and the

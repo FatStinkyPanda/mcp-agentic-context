@@ -97,7 +97,20 @@ a fresh push on PR #4 and silently dropped a commit — `work land` now refuses 
 while local commits are missing from the merged tree (journals `work.merge_race`).
 Selftest 60/60.
 
-Remaining from the scale blueprint: reconciler workflow (issue #2).
+**Reconciler — SHIPPED 2026-06-12 (issue #2, picked by `work next` itself):**
+`agent-reconcile.yml` (cron */10, dispatch, repository_dispatch[agent-sync]; singleton;
+GITHUB_TOKEN only) runs `swarm_reconcile.py`: ONE batched GraphQL read, a pure
+level-triggered `plan()` (re-seed `state:available` on label-less open issues, dedupe
+agent-impact comment families keeping the lowest id), individually idempotent mutations,
+ndjson audit log. Tests prove convergence to zero actions.
+
+**THE SCALE BLUEPRINT IS COMPLETE (items 1-20, plus the self-update system).** The full
+loop stands: form-issues -> atomic checkout (label CAS) -> fleet self-assignment
+(`work next`) -> gated PR landing (auto-merge behind required checks, merge-race guard) ->
+reconciler cleanup -> self-updating installs delivering each release to every user at
+session start. Releases: v2.2.0 (scale tier), v2.3.0 (update era), v2.4.0 (blueprint
+complete). Future innovation continues through the lifecycle itself: file an agent-task
+issue, let `work next` route it.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):
