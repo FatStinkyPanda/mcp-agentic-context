@@ -203,6 +203,7 @@ Multi-Agent Collaboration:
     collab lease release|renew|break|status|valid <res> [--fence N]
     collab claim add <id> <pattern>  Advisory work-area ownership
     collab work list            Open GitHub issues + who has them checked out
+    collab work next [--start]  Best non-conflicting ready issue for YOU (fleet-decorrelated)
     collab work start <issue#> [--branch]   Check OUT an issue (assign+label+claim+journal)
     collab work verify <issue#> Still mine on GitHub? Lost checkouts self-drop
     collab work submit <issue#> [--draft]   Push branch + open THE PR + arm auto-merge
@@ -211,7 +212,7 @@ Multi-Agent Collaboration:
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
     collab github-setup [--apply]  Labels + state:available seeding + master ruleset
-    collab selftest             57-check engine verification (throwaway store)
+    collab selftest             60-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 
