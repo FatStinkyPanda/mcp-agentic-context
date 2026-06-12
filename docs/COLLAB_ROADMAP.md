@@ -85,8 +85,19 @@ puts every transport call behind a SHARED penalty gate: any 403/429 trips a jitt
 back-off window for the whole team (no stampede on a shared token); corrupt/missing gate
 files fail OPEN. `work list` rides the cache. Selftest 57/57.
 
-Remaining from the scale blueprint (follow-up order): reconciler workflow (issue #2),
-`work next` conflict-aware auto-assignment (issue #3, blocked by #1 — now unblocked).
+**Fleet self-organization — SHIPPED 2026-06-12 (issue #3):** `collab work next [--start]`
+picks the best NON-CONFLICTING ready issue with no human dispatcher: candidates from the
+shared cache, minus checked-out/labeled/blocked issues; the busy set is every active
+checkout's impact closure (prebuilt `.mcp/impact_graph.json`, suffix-matched, never rebuilt
+inline); ranked by (no-overlap, priority, blast radius, number) with per-agent sha1
+rotation inside the equal head tier so identical fleets fan out instead of stampeding one
+issue. `--start` checks the pick out and NEVER auto-picks overlapping work. Plus a
+landing-race guard born from production: auto-merge fired on an old head concurrently with
+a fresh push on PR #4 and silently dropped a commit — `work land` now refuses to finalize
+while local commits are missing from the merged tree (journals `work.merge_race`).
+Selftest 60/60.
+
+Remaining from the scale blueprint: reconciler workflow (issue #2).
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):

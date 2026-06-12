@@ -279,7 +279,9 @@ TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "verb": {"type": "string",
-                         "description": "list | start | verify | submit | land | done | drop | tick"},
+                         "description": "list | next | start | verify | submit | land | done | drop | tick"},
+                "start": {"type": "boolean",
+                          "description": "next: check out the best conflict-free pick"},
                 "issue": {"type": "integer", "description": "Issue number (every verb except list)"},
                 "item": {"type": "integer", "description": "tick: 1-based checkbox index"},
                 "pr": {"type": "string", "description": "done: PR URL to link instead of closing"},
@@ -570,6 +572,10 @@ class MCPServer:
         verb = str(args.get("verb", "")).lower()
         if verb == "list":
             ok, out = ac.work_list(project, who)
+            return ("OK\n" if ok else "FAIL — ") + out
+        if verb == "next":
+            ok, out = ac.work_next(project, who, start=bool(args.get("start")),
+                                   make_branch=bool(args.get("branch")))
             return ("OK\n" if ok else "FAIL — ") + out
         issue = args.get("issue")
         if issue is None:

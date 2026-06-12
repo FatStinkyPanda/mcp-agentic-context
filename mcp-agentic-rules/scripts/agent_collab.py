@@ -37,6 +37,9 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
   claim drop <id>
   claim list
   work list                           (open GitHub issues + who has them checked out)
+  work next [--start] [--branch]      (the best NON-CONFLICTING ready issue for YOU —
+                                       ranked by overlap/priority/blast radius, fleet-
+                                       decorrelated; --start checks it out)
   work start <issue#> [--branch]      (check OUT an issue: cross-machine label CAS +
                                        assign + label, claim, journal)
   work verify <issue#>                (still mine on GitHub? lost checkouts self-drop —
@@ -86,6 +89,7 @@ mid-writes, not corruption. Deterministic rename destinations are NOT a CAS on W
 """
 
 from pathlib import Path
+import hashlib
 import heapq
 import json
 import os
@@ -1396,11 +1400,40 @@ def work_land(project: str, issue, who: str, runner=None):
         return False, ("issue #%d has no submitted PR — run `work submit %d` first"
                        % (issue, issue))
     ok, view = _gh_json(["pr", "view", str(pr),
-                         "--json", "state,mergeStateStatus,headRefName,url"], runner=run)
+                         "--json", "state,mergeStateStatus,headRefName,url,mergeCommit"],
+                        runner=run)
     if not ok:
         return False, view
     if view.get("state") == "MERGED":
         head = view.get("headRefName") or rec.get("branch", "")
+        # RACE GUARD (observed live on PR #4): auto-merge can fire on an OLDER
+        # head concurrently with a fresh push — the late commits silently miss
+        # the merge. Never finalize (or delete branches) while local commits
+        # are absent from the merged tree.
+        local_branch = rec.get("branch", "")
+        merged_oid = (view.get("mergeCommit") or {}).get("oid", "")
+        if local_branch and merged_oid:
+            try:
+                have = subprocess.run(["git", "rev-parse", "--verify", "--quiet",
+                                       local_branch], capture_output=True, text=True,
+                                      timeout=15)
+                if have.returncode == 0:
+                    if subprocess.run(["git", "cat-file", "-e", merged_oid + "^{commit}"],
+                                      capture_output=True, timeout=15).returncode != 0:
+                        subprocess.run(["git", "fetch", "origin", merged_oid],
+                                       capture_output=True, timeout=60)
+                    missing = subprocess.run(
+                        ["git", "log", "--oneline", "%s..%s" % (merged_oid, local_branch)],
+                        capture_output=True, text=True, timeout=15).stdout.strip()
+                    if missing:
+                        journal_log(project, who, "work.merge_race",
+                                    {"issue": issue, "pr": pr,
+                                     "missing": missing.splitlines()[:5]})
+                        return False, ("PR #%d merged WITHOUT your latest local commit(s):"
+                                       "\n%s\ncherry-pick them onto a fresh branch and "
+                                       "submit again — nothing was finalized" % (pr, missing))
+            except Exception:
+                pass        # the guard is best-effort; probes must never block landing
         if head:
             run(["api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/heads/" + head])
         claim_drop(project, "issue-%d" % issue, who)
@@ -1522,6 +1555,99 @@ def work_tick(project: str, issue, item, who: str, runner=None):
         return False, err
     journal_log(project, who, "work.tick", {"issue": issue, "item": item, "text": line[:120]})
     return True, "ticked #%d item %d: %s" % (issue, item, line[:80])
+
+
+def _norm_key(p) -> str:
+    p = str(p).replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _load_impact_closure(paths, root=None):
+    """Expand paths to themselves + their transitive dependents using the
+    PREBUILT .mcp/impact_graph.json (built by `mcp impact --index`; NEVER
+    rebuilt inline — scheduling must stay cheap). Suffix-matched onto graph
+    keys; an absent graph degrades to the literal paths."""
+    out = {_norm_key(p) for p in paths if p}
+    graph = _read_json(Path(root or Path.cwd()) / ".mcp" / "impact_graph.json")
+    ib_raw = (graph or {}).get("imported_by") or {}
+    if not ib_raw or not out:
+        return out
+    ib = {_norm_key(k): [_norm_key(v) for v in vs] for k, vs in ib_raw.items()}
+    frontier = []
+    for p in list(out):
+        if p in ib:
+            frontier.append(p)
+        else:
+            frontier += [k for k in ib if k.endswith("/" + p)]
+    seen = out | set(frontier)
+    while frontier:
+        for dep in ib.get(frontier.pop(), []):
+            if dep not in seen:
+                seen.add(dep)
+                frontier.append(dep)
+    return seen
+
+
+def work_next(project: str, who: str, runner=None, start: bool = False,
+              make_branch: bool = False):
+    """How a fleet self-organizes: pick the best NON-CONFLICTING ready issue,
+    no human dispatcher. Candidates come from the shared issue cache; the busy
+    set is every active checkout's impact closure; ranking is (no-overlap,
+    priority, blast radius, number) with per-agent rotation inside the equal
+    head tier so identical fleets fan out instead of stampeding one issue.
+    --start checks the pick out (NEVER an overlapping one — those need an
+    explicit, journaled `work start`). Returns (ok, message)."""
+    ok, issues, note = issues_cached(project, who, runner=runner)
+    if not ok:
+        return False, note
+    records = work_all(project)
+    checked_out = {w.get("issue") for w in records}
+    busy = set()
+    for w in records:
+        busy |= _load_impact_closure(w.get("paths", []))
+    open_numbers = {it.get("number") for it in issues}
+    ranked = []
+    for it in issues:
+        n = it.get("number")
+        labs = {x.get("name", "") for x in it.get("labels", [])}
+        if n in checked_out or "in-progress" in labs \
+                or any(x.startswith("agent:") for x in labs):
+            continue                                   # someone is on it
+        form = parse_issue_form(it.get("body") or "")
+        if any(d in open_numbers for d in (form.get("depends") or [])):
+            continue                                   # blocked — not ready
+        paths = (form.get("paths") or extract_paths(it.get("body") or ""))[:8]
+        closure = _load_impact_closure(paths)
+        overlap = sorted(closure & busy)
+        prio = form.get("priority", "P2")
+        prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(prio, 2)
+        ranked.append({"n": n, "title": it.get("title", ""), "overlap": overlap,
+                       "prio": prio,
+                       "rank": (1 if overlap else 0, prio_rank, len(closure), n)})
+    ranked.sort(key=lambda r: r["rank"])
+    if not ranked:
+        return False, "no ready candidates %s" % note
+    head_key = ranked[0]["rank"][:2]
+    tier = [r for r in ranked if r["rank"][:2] == head_key]
+    rot = int(hashlib.sha1(who.encode("utf-8")).hexdigest(), 16) % len(tier)
+    ordered = tier[rot:] + tier[:rot] + [r for r in ranked if r["rank"][:2] != head_key]
+    if not start:
+        lines = ["ready work %s (best first for %s):" % (note, who)]
+        for r in ordered[:10]:
+            mark = (" [OVERLAP: %s]" % ", ".join(r["overlap"][:3])) if r["overlap"] else ""
+            lines.append("  #%-5d %s  [%s] [blast=%d]%s"
+                         % (r["n"], r["title"][:55], r["prio"], r["rank"][2], mark))
+        lines.append("run `work next --start` to check the best one out")
+        return True, "\n".join(lines)
+    for r in [x for x in ordered if not x["overlap"]][:5]:
+        s_ok, s_msg = work_start(project, r["n"], who, make_branch, runner=runner)
+        if s_ok:
+            return True, s_msg
+        _backoff_sleep(1, base=0.2, cap=1.0)           # lost a race — jitter, next one
+    return False, ("no conflict-free candidate could be checked out %s — overlapping "
+                   "work needs an explicit `work start <n>`" % note)
 
 
 # ── github-setup (one-command repo provisioning for the work machinery) ──────────────────────
@@ -2382,6 +2508,66 @@ def selftest():
               and "state:available" in state.get("labels_created", [])
               and state.get("repo_settings", {}).get("allow_auto_merge") is True)
 
+        # ---- work next: fleet self-organization ----
+        def _cache_bust():
+            try:
+                (_gh_cache_dir(P) / "issues.json").unlink()
+            except OSError:
+                pass
+        state["issues"]["30"] = {"title": "Occupied", "url": "https://github.com/x/y/issues/30",
+                                 "body": "### Objective\n\nA\n\n### Files/areas touched\n\n"
+                                         "src/nx1.py\n\n### Priority\n\nP1",
+                                 "labels": ["state:available"], "state": "open"}
+        _cache_bust()
+        work_start(P, 30, A, runner=fake)                  # A occupies src/nx1.py
+        state["issues"]["31"] = {"title": "Overlapping P0",
+                                 "url": "https://github.com/x/y/issues/31",
+                                 "body": "### Objective\n\nB\n\n### Files/areas touched\n\n"
+                                         "src/nx1.py\n\n### Priority\n\nP0",
+                                 "labels": ["state:available"], "state": "open"}
+        state["issues"]["32"] = {"title": "Blocked", "url": "https://github.com/x/y/issues/32",
+                                 "body": "### Objective\n\nC\n\n### Files/areas touched\n\n"
+                                         "src/nx2.py\n\n### Blocked by\n\n#31\n\n"
+                                         "### Priority\n\nP0",
+                                 "labels": ["state:available"], "state": "open"}
+        state["issues"]["33"] = {"title": "Clean P0", "url": "https://github.com/x/y/issues/33",
+                                 "body": "### Objective\n\nD\n\n### Files/areas touched\n\n"
+                                         "src/nx3.py\n\n### Priority\n\nP0",
+                                 "labels": ["state:available"], "state": "open"}
+        _cache_bust()
+        nx_ok, nx_out = work_next(P, B, runner=fake)
+        head_m = re.search(r"#(\d+)", nx_out.splitlines()[1]) if nx_ok else None
+        check("work next: excludes checked-out + blocked, ranks clean P0 first, marks overlap",
+              nx_ok and head_m is not None and head_m.group(1) == "33"
+              and "#30" not in nx_out and "#32" not in nx_out and "OVERLAP" in nx_out)
+        _cache_bust()
+        ws_ok, ws_msg = work_next(P, B, runner=fake, start=True)
+        rec33 = _read_json(work_path(P, 33))
+        check("work next --start checks out the conflict-free pick, never overlap",
+              ws_ok and "issue #33" in ws_msg
+              and rec33 is not None and rec33.get("owner") == B
+              and not work_path(P, 31).exists())
+        for k, pth in (("34", "src/nx4.py"), ("35", "src/nx5.py")):
+            state["issues"][k] = {"title": "Tier " + k,
+                                  "url": "https://github.com/x/y/issues/" + k,
+                                  "body": "### Objective\n\nE\n\n### Files/areas touched\n\n"
+                                          "%s\n\n### Priority\n\nP0" % pth,
+                                  "labels": ["state:available"], "state": "open"}
+        _cache_bust()
+        nm_pool = ["nx-a", "nx-b", "nx-c", "nx-d", "nx-e", "nx-f", "nx-g", "nx-h"]
+        w1 = nm_pool[0]
+        w2 = next(n for n in nm_pool[1:]
+                  if int(hashlib.sha1(n.encode()).hexdigest(), 16) % 2
+                  != int(hashlib.sha1(w1.encode()).hexdigest(), 16) % 2)
+        n1_ok, n1_out = work_next(P, w1, runner=fake)
+        n2_ok, n2_out = work_next(P, w2, runner=fake)
+        h1 = re.search(r"#(\d+)", n1_out.splitlines()[1]).group(1) if n1_ok else "?"
+        h2 = re.search(r"#(\d+)", n2_out.splitlines()[1]).group(1) if n2_ok else "?"
+        check("work next decorrelates identical fleets (different heads per agent)",
+              n1_ok and n2_ok and h1 != h2 and {h1, h2} == {"34", "35"})
+        work_drop(P, 33, B, runner=fake)
+        work_drop(P, 30, A, runner=fake)
+
         # ---- seats ----
         wd1 = Path(tempfile.mkdtemp(prefix="seat1-", dir=store))
         s1_ok, s1 = seat_init("tst-alpha", workdir=wd1, project=P)
@@ -2726,6 +2912,9 @@ def main():
         try:
             if verb == "list":
                 ok, out = work_list(project, who)
+            elif verb == "next":
+                ok, out = work_next(project, who, start="--start" in args,
+                                    make_branch=make_branch)
             elif verb == "start" and len(args) >= 3:
                 ok, out = work_start(project, args[2], who, make_branch, force=force)
             elif verb == "done" and len(args) >= 3:
