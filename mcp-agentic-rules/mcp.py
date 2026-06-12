@@ -207,7 +207,7 @@ Multi-Agent Collaboration:
     collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
-    collab selftest             35-check engine verification (throwaway store)
+    collab selftest             41-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
     comms status|send|listen    Presence + agent-to-agent messages
 

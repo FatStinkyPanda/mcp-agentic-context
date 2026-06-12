@@ -327,8 +327,13 @@ def lease_acquire(project: str, resource: str, who: str, ttl: float = DEFAULT_TT
                                 {"resource": resource, "their_workdir": current.get("workdir"),
                                  "my_workdir": cwd})
                     return False, dict(current, refusal=refusal)
-                return lease_renew(project, resource, who)        # re-entrant, same seat
-            if not current["stale"]:
+                if not current["stale"]:
+                    return lease_renew(project, resource, who)    # re-entrant, same seat
+                # Our OWN lease expired: fall through to the CAS-take path so the
+                # re-acquisition mints a strictly HIGHER fence — a renew/recreate
+                # here could resurrect the old incarnation over a competitor who
+                # legitimately broke the stale lease in the meantime.
+            elif not current["stale"]:
                 return False, current                              # held by a LIVE other
         if current or corrupt:                                     # stale/corrupt → CAS-take
             tomb, parsed = _cas_take(path)
@@ -371,8 +376,11 @@ def _lease_stale(raw: dict) -> bool:
 
 
 def lease_renew(project: str, resource: str, who: str, fence=None):
-    """Renew ONLY the same incarnation: owner, workdir, and (when given) fence
-    must all match the stored lease. NEVER recreates a missing/broken lease."""
+    """Renew ONLY the same LIVE incarnation, as a CAS: the lease file is taken
+    (rename), re-verified against the TAKEN content — not an earlier read —
+    and recreated. A renew can therefore never resurrect an expired lease and
+    never clobber a competitor who legitimately broke + re-acquired it in the
+    read→write window (the adversarial-review critical finding)."""
     path = lease_path(project, resource)
     current = lease_info(project, resource)
     if not current or current.get("owner") != who:
@@ -383,11 +391,35 @@ def lease_renew(project: str, resource: str, who: str, fence=None):
     if current.get("workdir") not in (None, str(Path.cwd())):
         return False, dict(current, refusal="this identity holds the lease from another "
                                             "workdir — one seat = one agent")
-    current["renewed"] = _now()
-    current.pop("expires_in", None)
-    current.pop("stale", None)
-    atomic_write_json(path, current)
-    return True, current
+    if current["stale"]:
+        return False, dict(current, refusal="lease expired — a renew cannot resurrect it; "
+                                            "re-acquire to mint a new fence")
+    tomb, parsed = _cas_take(path)
+    if tomb is None:
+        return False, lease_info(project, resource)
+    same = (parsed and parsed.get("owner") == who and not _lease_stale(parsed)
+            and int(parsed.get("fence", 0)) == int(current.get("fence", 0))
+            and (fence is None or int(parsed.get("fence", 0)) == int(fence)))
+    if not same:
+        _restore_or_journal(path, tomb, parsed, project, who, "lease")
+        return False, parsed or lease_info(project, resource)
+    renewed = dict(parsed, renewed=_now())
+    try:
+        with open(path, "x", encoding="utf-8") as f:
+            json.dump(renewed, f, indent=2)
+    except FileExistsError:                        # third party occupied the gap
+        journal_log(project, who, "lease.renew_collision",
+                    {"resource": resource, "fence": parsed.get("fence")})
+        try:
+            tomb.unlink()
+        except OSError:
+            pass
+        return False, lease_info(project, resource)
+    try:
+        tomb.unlink()
+    except OSError:
+        pass
+    return True, renewed
 
 
 def lease_valid(project: str, resource: str, who: str, fence) -> tuple:
@@ -418,6 +450,9 @@ def lease_release(project: str, resource: str, who: str, fence=None):
     if parsed and not ours and not _lease_stale(parsed):
         _restore_or_journal(path, tomb, parsed, project, who, "lease")
         return False, parsed
+    # record the retired fence in the sidecar: even if the acquire that minted
+    # it crashed before its own bump, the high-water mark survives retirement
+    _fence_bump(project, resource, int((parsed or {}).get("fence", 0) or 0))
     try:
         tomb.unlink()
     except OSError:
@@ -444,6 +479,7 @@ def lease_break(project: str, resource: str, who: str):
     if parsed and not _lease_stale(parsed):
         _restore_or_journal(path, tomb, parsed, project, who, "lease")
         return False, parsed
+    _fence_bump(project, resource, int((parsed or {}).get("fence", 0) or 0))
     try:
         tomb.unlink()
     except OSError:
@@ -510,8 +546,31 @@ def claim_add(project: str, claim_id: str, pattern: str, who: str, note: str = "
                         "identity '%s' already owns claim '%s' from workdir '%s' — a different "
                         "seat. Use your own call-sign (`mcp collab seat new`)."
                         % (who, claim_id, existing.get("workdir"))))
-                refreshed = dict(existing, pattern=pattern, note=note, session=SESSION, v=2)
-                atomic_write_json(path, refreshed)                 # keep the original time
+                # refresh as a CAS: take, re-verify the TAKEN content is still
+                # ours, recreate — a blind rewrite could clobber a competitor
+                # who dropped + re-claimed in the read→write window
+                tomb, parsed = _cas_take(path)
+                if tomb is None:
+                    _backoff_sleep(attempt, base=0.02, cap=0.3)
+                    continue
+                if not parsed or parsed.get("owner") != who:
+                    _restore_or_journal(path, tomb, parsed, project, who, "claim")
+                    return False, parsed or existing
+                refreshed = dict(parsed, pattern=pattern, note=note, session=SESSION, v=2)
+                try:
+                    with open(path, "x", encoding="utf-8") as f:   # keep the original time
+                        json.dump(refreshed, f, indent=2)
+                except FileExistsError:
+                    journal_log(project, who, "claim.refresh_collision", {"id": claim_id})
+                    try:
+                        tomb.unlink()
+                    except OSError:
+                        pass
+                    return False, _read_json(path)
+                try:
+                    tomb.unlink()
+                except OSError:
+                    pass
                 return True, refreshed
             return False, existing
     return False, _read_json(path)
@@ -1061,24 +1120,48 @@ def seat_init(callsign: str = None, workdir=None, project: str = "default"):
     else:
         host = re.sub(r"[^a-z0-9]+", "-", socket.gethostname().lower()).strip("-") or "host"
         repo = re.sub(r"[^a-z0-9]+", "-", wd.name.lower()).strip("-") or "repo"
-        for n in range(1, 100):
-            cand = ("%s-%s-w%d" % (host, repo, n))[:39]
-            pres = get_comms_dir() / f"{cand}.json"
-            try:                                   # O_EXCL presence stub = the reservation
-                fd = os.open(pres, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+        def _reserve(c):
+            """The O_EXCL presence stub is the ONLY way a callsign is assigned."""
+            try:
+                fd = os.open(get_comms_dir() / f"{c}.json",
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(fd, json.dumps(
-                    {"hostname": cand, "timestamp": _now(), "status": "seating",
+                    {"hostname": c, "timestamp": _now(), "status": "seating",
                      "current_task": "seat init", "last_seen": time.ctime(),
                      "workdir": str(wd), "session": SESSION, "v": 2},
                     indent=2).encode("utf-8"))
                 os.close(fd)
+                return True
+            except FileExistsError:
+                return False
+
+        for n in range(1, 100):
+            cand = ("%s-%s-w%d" % (host, repo, n))[:39]
+            pres = get_comms_dir() / f"{cand}.json"
+            if _reserve(cand):
                 callsign = cand
                 break
-            except FileExistsError:
-                d = _read_json(pres)
-                if d and (_now() - d.get("timestamp", 0)) >= PRESENCE_FRESH_SECONDS:
-                    callsign = cand                # stale reservation — reuse it
-                    break
+            d = _read_json(pres)
+            if not d or (_now() - d.get("timestamp", 0)) < PRESENCE_FRESH_SECONDS:
+                continue                           # live reservation — next candidate
+            # Idle is not gone: a callsign still BOUND by a seat file in its
+            # recorded workdir is taken until that seat is removed.
+            wd_rec = d.get("workdir")
+            if wd_rec:
+                bound = _read_json(Path(wd_rec) / ".mcp" / "seat.json")
+                if bound and bound.get("identity") == cand:
+                    continue
+            tomb, _ = _cas_take(pres)              # atomic reclaim — exactly one winner
+            if tomb is None:
+                continue
+            try:
+                tomb.unlink()
+            except OSError:
+                pass
+            if _reserve(cand):                     # back through the same O_EXCL gate
+                callsign = cand
+                break
         if not callsign:
             return False, "could not allocate a default callsign — pass one explicitly"
     spath.parent.mkdir(parents=True, exist_ok=True)
@@ -1416,6 +1499,22 @@ def selftest():
         check("cross-workdir same-identity acquisition is REFUSED",
               not wr_ok and "refusal" in (wr_info or {}))
 
+        # adversarial-review hardening: renew can never resurrect or clobber
+        h_ok, lh = lease_acquire(P, "hardened", A, ttl=0.4)
+        time.sleep(0.6)
+        hr_ok, hr = lease_renew(P, "hardened", A)
+        check("renew refuses to resurrect an expired lease",
+              h_ok and not hr_ok and "refusal" in (hr or {}))
+        ra_ok, ra = lease_acquire(P, "hardened", A, ttl=600)
+        check("re-acquiring your own expired lease mints a HIGHER fence",
+              ra_ok and ra["fence"] == lh["fence"] + 1)
+        _fence_path(P, "hardened").unlink()        # simulate a crashed sidecar bump
+        lease_release(P, "hardened", A, fence=ra["fence"])
+        cw_ok, cw = lease_acquire(P, "hardened", B, ttl=600)
+        check("retirement preserves the fence high-water mark (crash window closed)",
+              cw_ok and cw["fence"] > ra["fence"])
+        lease_release(P, "hardened", B, fence=cw["fence"])
+
         # ---- atomic visibility under concurrent rewrite ----
         target = Path(store) / "atomic-probe.json"
         atomic_write_json(target, {"i": -1})
@@ -1475,6 +1574,11 @@ def selftest():
         cc_ok, _ = claim_add(P, "rusty-claim", "y/*", A)
         check("corrupt claim self-heals then is claimable", cc_ok)
         claim_drop(P, "rusty-claim", A)
+        cf_ok, cf1 = claim_add(P, "refresh-area", "a/*", A)
+        cf2_ok, cf2 = claim_add(P, "refresh-area", "b/*", A)     # owner refresh (CAS)
+        check("claim refresh keeps ownership + original time, updates pattern",
+              cf_ok and cf2_ok and cf2["pattern"] == "b/*" and cf2["time"] == cf1["time"])
+        claim_drop(P, "refresh-area", A)
 
         # ---- wait-acquire ----
         lease_acquire(P, "waitres", A, ttl=0.5)
@@ -1587,6 +1691,27 @@ def selftest():
         s4_ok, s4 = seat_init(None, workdir=wd4, project=P)
         check("default callsign allocation is collision-free and well-formed",
               s4_ok and re.match(r"^[a-z0-9][a-z0-9-]*-w\d+$", s4 or ""))
+        # same-basename workdirs collide on candidate names — the hard cases:
+        pa = Path(tempfile.mkdtemp(dir=store)) / "samename"
+        pb = Path(tempfile.mkdtemp(dir=store)) / "samename"
+        pc = Path(tempfile.mkdtemp(dir=store)) / "samename"
+        pa.mkdir(); pb.mkdir(); pc.mkdir()
+        sa_ok, sa = seat_init(None, workdir=pa, project=P)
+        presa = get_comms_dir() / (str(sa) + ".json")
+        da = _read_json(presa)
+        da["timestamp"] = _now() - 3600                    # idle, but still SEATED
+        atomic_write_json(presa, da)
+        sb_ok, sb = seat_init(None, workdir=pb, project=P)
+        check("an idle seat-bound callsign is never auto-reused",
+              sa_ok and sb_ok and sb != sa)
+        presb = get_comms_dir() / (str(sb) + ".json")
+        db = _read_json(presb)
+        db["timestamp"] = _now() - 3600
+        atomic_write_json(presb, db)
+        (pb / ".mcp" / "seat.json").unlink()               # agent gone for good
+        sc_ok, sc = seat_init(None, workdir=pc, project=P)
+        check("a stale UNBOUND reservation is reclaimed atomically",
+              sc_ok and sc == sb)
         if saved_identity:
             os.environ.pop("AGENT_IDENTITY", None)
         clear_seat_cache()

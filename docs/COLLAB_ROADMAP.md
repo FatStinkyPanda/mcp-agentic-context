@@ -7,7 +7,10 @@ automated workflows that auto-detect the impact of any issue/task an agent check
 device), atomic primitives throughout, and E2E testing expected for every commit.
 
 ## THE SCALE TIER — SHIPPED 2026-06-11 (Quasar)
-Selftest 35/35 green; swarm invariants proven at 16 processes per commit (CI), 100 nightly.
+Selftest 41/41 green (incl. adversarial-review hardening: CAS renew that can never
+resurrect an expired lease, CAS claim refresh, fence high-water preserved across
+retirement, seat reclaim through the O_EXCL gate, idle-but-seated callsigns never
+reused); swarm invariants proven at 16 processes per commit (CI), 100 nightly.
 
 - **Atomic store discipline** — every write is O_EXCL create / temp+`os.replace`
   (`atomic_write_json`) / rename-to-unique-tombstone (`_cas_take`); a write-discipline test
