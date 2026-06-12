@@ -224,6 +224,9 @@ Automation:
     mcp-serve                   Model Context Protocol server over stdio
 
 Setup & Diagnostics:
+    update                      Update to the latest release (backup + verify + rollback)
+    update --check|--status     Is a newer release available? Versions + auto-update config
+    update --enable-auto|--disable-auto   Agents may update unprompted (default: enabled)
     setup --all                 Full setup
     setup --hooks               Install git hooks
     integrate                   Wire agent discovery (CLAUDE.md/AGENTS.md/.mcp.json)
@@ -316,6 +319,7 @@ COMMANDS = {
     'pipeline': 'cicd',
     'test-gen': 'test_gen',
     # Setup & Automation
+    'update': 'updater',
     'setup': 'setup',
     'integrate': 'integrate',
     'warm': 'warm',
@@ -378,6 +382,14 @@ def main():
             # a module returns (None, bools, negative ints that would wrap to
             # 255 on Windows) onto that contract.
             rc = module.main()
+            # Session-start commands carry the one-line update notice (stderr,
+            # so machine-parsed stdout stays clean; never affects exit codes).
+            try:
+                from scripts import updater
+                if command in updater.NOTIFY_COMMANDS:
+                    updater.maybe_notify()
+            except Exception:
+                pass
             return 0 if rc is None or rc == 0 else 1
         else:
             print(f"[FAIL] Module {module_name} has no main function")
