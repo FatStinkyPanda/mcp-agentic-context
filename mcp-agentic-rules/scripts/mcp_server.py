@@ -286,6 +286,8 @@ TOOLS: List[Dict[str, Any]] = [
                 "branch": {"type": "boolean",
                            "description": "start: create + switch to branch agent/<id>/issue-<n>"},
                 "draft": {"type": "boolean", "description": "submit: open the PR as a draft"},
+                "force": {"type": "boolean",
+                          "description": "start: override an OPEN 'Blocked by' dependency"},
                 "project": {"type": "string"},
                 "identity": {"type": "string"},
             },
@@ -574,7 +576,8 @@ class MCPServer:
             return "issue number required for '%s'" % verb
         try:
             if verb == "start":
-                ok, out = ac.work_start(project, issue, who, bool(args.get("branch")))
+                ok, out = ac.work_start(project, issue, who, bool(args.get("branch")),
+                                        force=bool(args.get("force")))
             elif verb == "verify":
                 ok, out = ac.work_verify(project, issue, who)
             elif verb == "submit":

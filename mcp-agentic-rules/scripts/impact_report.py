@@ -29,8 +29,8 @@ import sys
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.impact import build_dependency_graph              # noqa: E402
-from scripts.agent_collab import extract_paths                 # noqa: E402
+from scripts.impact import build_dependency_graph                   # noqa: E402
+from scripts.agent_collab import extract_paths, parse_issue_form    # noqa: E402
 
 MARKER = "<!-- agent-impact -->"
 CAP = 10           # listed items per section; counts always show the full total
@@ -96,7 +96,9 @@ def radar(graph, our_keys, our_impact, skip_issue):
         n = it.get("number")
         if skip_issue is not None and n == skip_issue:
             continue
-        resolved, _ = resolve_mentions(graph, extract_paths(it.get("body") or ""))
+        body = it.get("body") or ""
+        their_mentions = parse_issue_form(body).get("paths") or extract_paths(body)
+        resolved, _ = resolve_mentions(graph, their_mentions)
         their_keys = [k for ks in resolved.values() for k in ks]
         theirs = set(their_keys) | impact_set(graph, their_keys)
         common = sorted(ours & theirs)
@@ -121,7 +123,9 @@ def main():
 
     mentions = []
     if args.from_env:
-        mentions = extract_paths(os.environ.get(args.from_env, ""))
+        text = os.environ.get(args.from_env, "")
+        # issue-form bodies are authoritative; free text falls back to extraction
+        mentions = parse_issue_form(text).get("paths") or extract_paths(text)
     elif args.diff:
         proc = subprocess.run(["git", "diff", "--name-only", args.diff],
                               capture_output=True, text=True, timeout=60)

@@ -31,6 +31,20 @@ def test_env_read_at_call_time(monkeypatch, tmp_path):
     assert first != second, "get_nsync_path must re-read the env on every call"
 
 
+def test_issue_form_template_matches_parser():
+    """The CONTRACT pin: every parser field label appears verbatim as a form
+    label in .github/ISSUE_TEMPLATE/agent-task.yml, and the template seeds
+    state:available — drifting either side silently degrades path extraction."""
+    template = (Path(agent_collab.__file__).resolve().parents[2]
+                / ".github" / "ISSUE_TEMPLATE" / "agent-task.yml")
+    text = template.read_text(encoding="utf-8")
+    assert "state:available" in text, "template must seed the claimable state label"
+    for label in agent_collab.FORM_FIELDS.values():
+        assert ("label: %s" % label) in text, (
+            "FORM_FIELDS label %r is missing from agent-task.yml — "
+            "the parser and the template must change together" % label)
+
+
 def test_selftest_green(collab_store):
     """Parity pin: the CLI selftest and pytest agree forever."""
     ok, lines = agent_collab.selftest()

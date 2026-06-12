@@ -387,7 +387,7 @@ python mcp-agentic-rules/mcp.py collab journal tail 20
 
 # Onboarding an additional agent? It runs:
 python mcp-agentic-rules/mcp.py collab onboard     # prints the full join-the-team procedure
-python mcp-agentic-rules/mcp.py collab selftest    # 51-check engine verification (throwaway store)
+python mcp-agentic-rules/mcp.py collab selftest    # 54-check engine verification (throwaway store)
 
 # PROVE the concurrency story: N real OS processes hammering one store —
 # lease mutual exclusion, fencing under forced expiry, journal exactly-once,

@@ -710,6 +710,7 @@ def _fake_gh_apply(state: dict, gh_args):
         iss = issues[k]
         return True, json.dumps({"number": int(k), "title": iss.get("title", ""),
                                  "url": iss.get("url", ""), "body": iss.get("body", ""),
+                                 "state": iss.get("state", "open").upper(),
                                  "labels": [{"name": x} for x in iss.get("labels", [])],
                                  "assignees": []})
     if head == ["issue", "edit"]:
@@ -953,6 +954,47 @@ def extract_paths(text: str):
     return hits
 
 
+# The CONTRACT with .github/ISSUE_TEMPLATE/agent-task.yml — the form's section
+# labels, exactly as GitHub renders them into the issue body. Change BOTH.
+FORM_FIELDS = {"objective": "Objective", "paths": "Files/areas touched",
+               "depends": "Blocked by", "acceptance": "Acceptance checks",
+               "priority": "Priority", "area": "Area"}
+
+
+def parse_issue_form(body: str) -> dict:
+    """Parse a GitHub issue-form body (### <label> sections) into a dict with
+    FORM_FIELDS keys. Machine-parsable issues make claims, the conflict radar,
+    impact reports and scheduling DETERMINISTIC instead of regex-guessed.
+    'paths' becomes a list of lines; 'depends' a list of issue numbers;
+    '_No response_' fields are absent. Returns {} for non-form bodies."""
+    if not body or "### " not in body:
+        return {}
+    sections = {}
+    current, buf = None, []
+    for line in body.splitlines():
+        m = re.match(r"^###\s+(.+?)\s*$", line)
+        if m:
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current, buf = m.group(1), []
+        elif current is not None:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+    out = {}
+    for key, label in FORM_FIELDS.items():
+        val = sections.get(label)
+        if val in (None, "", "_No response_", "None"):
+            continue
+        out[key] = val
+    if "paths" in out:
+        out["paths"] = [p.strip() for p in out["paths"].splitlines()
+                        if p.strip() and not p.strip().startswith("#")]
+    if "depends" in out:
+        out["depends"] = [int(n) for n in re.findall(r"#?(\d+)", out["depends"])]
+    return out
+
+
 def work_conflicts(project: str):
     """Conflict radar: pairs of checked-out issues whose touched-path sets intersect."""
     ws = work_all(project)
@@ -966,10 +1008,13 @@ def work_conflicts(project: str):
     return out
 
 
-def work_start(project: str, issue, who: str, make_branch: bool = False, runner=None):
+def work_start(project: str, issue, who: str, make_branch: bool = False, runner=None,
+               force: bool = False):
     """Check OUT a GitHub issue like a lease. Transactional order: local truth
     settles atomically (claim + O_EXCL pending record) BEFORE slow gh mutations;
     a hard gh failure rolls everything back — no silent local/GitHub divergence.
+    Issue-form bodies are authoritative: their declared paths drive the claim,
+    and OPEN 'Blocked by' dependencies refuse the checkout (force overrides).
     Returns (ok, message)."""
     issue = int(issue)
     run = runner or GH_RUNNER
@@ -1008,6 +1053,18 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
         return False, ("issue #%d already carries the in-progress label on GitHub — checked "
                        "out by %s (possibly on another machine). Pick different work."
                        % (issue, holder))
+    # Blocked-by enforcement BEFORE the label CAS: a refusal after winning the
+    # CAS would consume state:available without restoring it.
+    form = parse_issue_form(meta.get("body", ""))
+    open_deps = []
+    for d in (form.get("depends") or [])[:10]:
+        ok_d, dmeta = _gh_json(["issue", "view", str(d), "--json", "state"], runner=run)
+        if ok_d and str(dmeta.get("state", "")).upper() == "OPEN":
+            open_deps.append(d)
+    if open_deps and not force:
+        return False, ("issue #%d is BLOCKED by open issue(s) %s — finish those first "
+                       "(or pass --force to override)"
+                       % (issue, ", ".join("#%d" % d for d in open_deps)))
     # Cross-machine atomic claim: removing the state:available label is GitHub's
     # one-winner primitive (the second DELETE gets 404). Local records arbitrate
     # same-store races; THIS arbitrates agents on different machines sharing one
@@ -1028,7 +1085,7 @@ def work_start(project: str, issue, who: str, make_branch: bool = False, runner=
             return False, ("gh claim failed for issue #%d (cannot verify the cross-machine "
                            "claim — not checking out): %s" % (issue, cas_out))
     title, url = meta.get("title", ""), meta.get("url", "")
-    paths = extract_paths(meta.get("body", ""))[:8]
+    paths = (form.get("paths") or extract_paths(meta.get("body", "")))[:8]
     pattern = ",".join(paths) if paths else url
     c_ok, c_info = claim_add(project, "issue-%d" % issue, pattern, who,
                              note="%s — %s" % (title, url))
@@ -2132,6 +2189,36 @@ def selftest():
               and "agent/selfA/issue-17" in state.get("deleted_refs", [])
               and any(e["event"] == "work.landed" for e in journal_tail(P, 10)))
 
+        # ---- issue forms: parse, prefer declared paths, enforce Blocked by ----
+        form_body = ("### Objective\n\nWire the thing\n\n"
+                     "### Files/areas touched\n\nsrc/form.py\ndocs/form.md\n\n"
+                     "### Blocked by\n\n#18\n\n"
+                     "### Acceptance checks\n\n- [ ] works\n\n"
+                     "### Priority\n\nP1\n\n### Area\n\n_No response_")
+        parsed = parse_issue_form(form_body)
+        check("issue-form parser: sections, path list, deps, _No response_ absent",
+              parsed.get("objective") == "Wire the thing"
+              and parsed.get("paths") == ["src/form.py", "docs/form.md"]
+              and parsed.get("depends") == [18]
+              and parsed.get("priority") == "P1" and "area" not in parsed)
+        state["issues"]["18"] = {"title": "Blocker", "url": "https://github.com/x/y/issues/18",
+                                 "body": "x", "labels": [], "state": "open"}
+        state["issues"]["19"] = {"title": "Form task", "url": "https://github.com/x/y/issues/19",
+                                 "body": form_body, "labels": ["state:available"],
+                                 "state": "open"}
+        bl_ok, bl_msg = work_start(P, 19, A, runner=fake)
+        check("an OPEN Blocked-by dependency refuses the checkout (label intact)",
+              not bl_ok and "BLOCKED" in bl_msg
+              and "issue-19" not in {c["id"] for c in claims_all(P)}
+              and "state:available" in state["issues"]["19"]["labels"])
+        state["issues"]["18"]["state"] = "closed"
+        fl_ok, _ = work_start(P, 19, A, runner=fake)
+        claims19 = {c["id"]: c for c in claims_all(P)}
+        check("form-declared paths drive the claim once unblocked",
+              fl_ok and claims19.get("issue-19", {}).get("pattern")
+              == "src/form.py,docs/form.md")
+        work_drop(P, 19, A, runner=fake)
+
         # ---- github-setup: dry-run inert, apply idempotent, drift refused ----
         state["issues"]["20"] = {"title": "Unlabeled", "url": "https://github.com/x/y/issues/20",
                                  "body": "plain", "labels": [], "state": "open"}
@@ -2495,13 +2582,17 @@ def main():
         if "--draft" in args:
             args.remove("--draft")
             draft = True
+        force = False
+        if "--force" in args:
+            args.remove("--force")
+            force = True
         pr = _pop_opt(args, "--pr", "")
         verb = args[1] if len(args) > 1 else "list"
         try:
             if verb == "list":
                 ok, out = work_list(project, who)
             elif verb == "start" and len(args) >= 3:
-                ok, out = work_start(project, args[2], who, make_branch)
+                ok, out = work_start(project, args[2], who, make_branch, force=force)
             elif verb == "done" and len(args) >= 3:
                 ok, out = work_done(project, args[2], who, pr)
             elif verb == "drop" and len(args) >= 3:

@@ -69,9 +69,16 @@ REFUSES if the contexts don't match real check runs on the default branch — a 
 never hard-block all merging. Applied to THIS repo: ruleset id 17613013 active.
 Selftest 51/51.
 
-Remaining from the scale blueprint (follow-up order): issue forms + shared parser, shared
-gh issue cache + rate-limit penalty gate, reconciler workflow (seed/dedupe), `work next`
-conflict-aware auto-assignment.
+**Issue forms — SHIPPED 2026-06-12:** `.github/ISSUE_TEMPLATE/agent-task.yml` (Objective /
+Files-areas-touched / Blocked by / Acceptance checks / Priority / Area; auto-labels
+`state:available`) + the shared `parse_issue_form()` — section labels are a pinned contract
+(`FORM_FIELDS`, enforced by a CI test against the template). Form-declared paths drive the
+claim, the conflict radar, and the auto-impact report (free text still falls back to
+extraction); OPEN `Blocked by` dependencies REFUSE `work start` (checked before the label
+CAS so a refusal never consumes `state:available`; `--force` overrides). Selftest 54/54.
+
+Remaining from the scale blueprint (follow-up order): shared gh issue cache + rate-limit
+penalty gate, reconciler workflow (seed/dedupe), `work next` conflict-aware auto-assignment.
 
 ## Where it stands (v2.1.0, commit 9c0f035)
 Built and verified (`mcp collab selftest` = 6/6 green):

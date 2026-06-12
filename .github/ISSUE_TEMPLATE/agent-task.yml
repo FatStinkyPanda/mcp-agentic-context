@@ -1,0 +1,52 @@
+# A unit of work an AI agent can check out atomically (`mcp collab work start`).
+# The section labels below are a CONTRACT with parse_issue_form() in
+# mcp-agentic-rules/scripts/agent_collab.py (FORM_FIELDS) — change BOTH or the
+# parser silently degrades to free-text path extraction.
+name: Agent task
+description: A unit of work an agent can check out atomically (mcp collab work)
+title: "[task] "
+labels: ["state:available"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What "done" looks like, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: paths
+    attributes:
+      label: Files/areas touched
+      description: One path or glob per line — drives the agent's claim, the conflict radar, and the auto-impact report.
+      placeholder: |
+        src/module.py
+        tests/test_module.py
+  - type: input
+    id: depends
+    attributes:
+      label: Blocked by
+      description: "Issue numbers this task depends on (e.g.: #12, #34). Agents refuse to start while any is open."
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance checks
+      description: Task list the assigned agent ticks via `work tick`.
+      placeholder: |
+        - [ ] tests pass
+        - [ ] docs updated
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+      default: 2
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      description: Subsystem tag (free text), e.g. collab, indexing, ci.
