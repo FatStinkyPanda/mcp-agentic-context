@@ -1,0 +1,45 @@
+# The closer of last resort: every 10 minutes (and on demand), reconcile
+# GitHub-side residue crashed agents cannot clean up themselves — re-seed
+# claimable issues, dedupe racing marker-comment families. Level-triggered
+# and idempotent; the run log is an ndjson audit of every mutation.
+#
+# Runs on GITHUB_TOKEN only: its events are inert (cannot retrigger other
+# workflows) and its rate budget is separate from the shared agent token.
+#
+# NOTE: GitHub disables scheduled workflows after ~60 days of repository
+# inactivity — re-enable from the Actions tab if the repo went quiet.
+name: agent-reconcile
+
+on:
+  schedule:
+    - cron: '4,14,24,34,44,54 * * * *'
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [agent-sync]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconcile (seed + dedupe)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          python mcp-agentic-rules/scripts/swarm_reconcile.py
+          --live --repo "${{ github.repository }}"
