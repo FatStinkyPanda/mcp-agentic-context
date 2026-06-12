@@ -6,6 +6,12 @@
 > exists in the current build; run `python mcp-agentic-rules/mcp.py help`
 > for the full registry.
 
+> **ACTIVE PRIORITY (2026-06-11, from the user): make multi-agent collab FIRST-CLASS —
+> GitHub-native (issues/tasks checked out like leases) + automated impact workflows.
+> The roadmap, current state, and working agreements: `docs/COLLAB_ROADMAP.md`. Sessions
+> developing THIS repo join the collab scope `mcp-agentic-context` (one workdir = one agent)
+> and keep `mcp collab selftest` green.**
+
 ---
 
 ## 1. Core Principles (Non-Negotiable)
