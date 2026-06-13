@@ -125,6 +125,7 @@ GC_TMP_HOURS = 1
 GC_PENDING_MINUTES = 10
 GC_JOURNAL_DAYS = 14
 GC_MAIL_DAYS = 7
+GC_SEGMENT_IDLE_SECONDS = 600       # a journal segment idle this long has no live writer
 GC_UNLINK_BOUND = 500               # max deletions per janitor pass (bounded work)
 CORRUPT_GRACE_SECONDS = 5.0         # unparseable + younger than this = a mid-write, NOT corrupt
 
@@ -2135,6 +2136,55 @@ def _janitor_sweep(project: str, who: str, dry_run: bool = False):
                     pass
     jdir = base / "journal"
     if jdir.is_dir():
+        # Consolidate INACTIVE per-writer segments into one archive: each
+        # short-lived mcp.py process leaves its own <id>.<pid>.ndjson, and every
+        # journal read iterates all of them, so they must not accumulate. A
+        # segment idle past GC_SEGMENT_IDLE_SECONDS has no live writer; claim it
+        # by unique rename (two janitors never double-consume), append its lines
+        # to journal/_consolidated.ndjson, then remove it. No event is lost.
+        cons = jdir / "_consolidated.ndjson"
+        inactive = []
+        for f in jdir.glob("*.ndjson"):
+            if f.name.startswith("_consolidated"):
+                continue                                   # never fold the archive in
+            try:
+                if now - f.stat().st_mtime > GC_SEGMENT_IDLE_SECONDS:
+                    inactive.append(f)
+            except OSError:
+                pass
+        if len(inactive) > 4 and not dry_run:              # only when worthwhile
+            try:
+                if cons.exists() and cons.stat().st_size > JOURNAL_ROTATE_BYTES:
+                    cons.rename(jdir / ("_consolidated.%d.ndjson" % int(now * 1000)))
+            except OSError:
+                pass
+            folded = 0
+            for f in inactive[:GC_UNLINK_BOUND]:
+                claimed = f.with_name(".%s.cons.%d.%s"
+                                      % (f.name, os.getpid(), os.urandom(3).hex()))
+                try:
+                    os.replace(f, claimed)                 # claim — exactly one wins
+                except OSError:
+                    continue
+                try:
+                    blob = claimed.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    blob = ""
+                if blob:
+                    if not blob.endswith("\n"):
+                        blob += "\n"
+                    fd = os.open(cons, os.O_APPEND | os.O_CREAT | os.O_WRONLY)
+                    try:
+                        os.write(fd, blob.encode("utf-8"))
+                    finally:
+                        os.close(fd)
+                try:
+                    claimed.unlink()
+                except OSError:
+                    pass
+                folded += 1
+            if folded:
+                counts["journal_consolidated"] = folded
         for f in jdir.glob("*.ndjson"):
             try:
                 if now - f.stat().st_mtime > GC_JOURNAL_DAYS * 86400:
