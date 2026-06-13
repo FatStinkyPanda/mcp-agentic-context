@@ -20,6 +20,17 @@ Replaced by the direct invariant — only a STILL-VALID holder commits the share
 so `final == acks` is race-free and O(1). The engine's mutual exclusion (MUTEX-2) and the
 fenced register were correct throughout.
 
+## OPERABILITY: fleet metrics from the journal — SHIPPED 2026-06-13 (issue #16, Quasar)
+`agent_collab.collab_metrics(project, hours)` turns the append-only journal into a fleet
+analytics source: throughput (work started/completed/in-flight/dropped/lost-race), CYCLE
+TIME (work.start→completion paired by issue: count + mean/p50/p90 minutes), lease churn,
+contention (collisions/merge-races/lost-races), and top agents — over a window, pure read,
+bounded + corruption-tolerant. CLI `mcp collab metrics [--hours N] [--json]`; a compact 24h
+line now rides `collab status` / `join` and the `collab_status` MCP tool. The third
+observability lens after the dashboard (current state) and `doctor` (health): how is the
+fleet PERFORMING. Live on this repo it already surfaced the real PR-#4 merge-race and the
+clean 22/22 lease acquire/release churn. Test pins throughput, cycle math, and windowing.
+
 ## OPERABILITY: collab health in `mcp doctor` — SHIPPED 2026-06-13 (issue #12, Quasar)
 `mcp doctor` / `mcp verify` gained a Collab Store dimension: the reusable
 `agent_collab.collab_health(project)` (pure diagnosis — agents live/total, identity

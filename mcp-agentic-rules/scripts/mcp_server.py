@@ -497,6 +497,16 @@ class MCPServer:
         for ia, oa, ib, ob, ov in ac.work_conflicts(project):
             lines.append(f"  [CONFLICT RADAR] #{ia} ({oa}) and #{ib} ({ob}) "
                          f"both touch: {', '.join(ov[:5])}")
+        try:
+            m = ac.collab_metrics(project, 24.0)
+            w, ct = m["work"], m["cycle_time"]
+            cyc = (" cycle p50 %.0fm" % ct["p50_minutes"]) if ct.get("completed") else ""
+            lines.append("-- 24h metrics --")
+            lines.append(f"  {w['started']} started, {w['completed']} completed, "
+                         f"{w['in_flight']} in-flight;{cyc} contention "
+                         f"{m['contention']['lost_races'] + m['contention']['collisions']}")
+        except Exception:
+            pass
         lines.append("-- journal (last 12) --")
         for e in ac.journal_tail(project, 12):
             lines.append(f"  {e['ts']} {e['who']:<16} {e['event']:<20} "
