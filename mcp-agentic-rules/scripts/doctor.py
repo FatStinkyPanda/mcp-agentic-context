@@ -295,6 +295,52 @@ class Doctor:
             }
         }
 
+    def check_collab(self) -> dict:
+        """Health of the multi-agent collaboration store (leases, claims, work
+        records, presence). Surfaces the hazards an operator of a many-agent
+        fleet otherwise hunts by hand, and feeds `--fix` self-heal."""
+        try:
+            try:
+                from scripts import agent_collab
+            except ImportError:
+                import importlib
+                agent_collab = importlib.import_module('agent_collab')
+            project = os.environ.get('MCP_COLLAB_PROJECT') or self.root.name
+            h = agent_collab.collab_health(project)
+        except Exception as e:
+            return {"name": "Collab Store", "status": "warn",
+                    "message": f"could not read collab store: {e}", "details": {}}
+
+        parts = [f"{h['agents_live']} live / {h['agents_total']} agents"]
+        if h['collisions']:
+            parts.append(f"{len(h['collisions'])} identity COLLISION(s)")
+        if h['corrupt_files']:
+            parts.append(f"{len(h['corrupt_files'])} corrupt file(s)")
+        if h['reclaimable']:
+            parts.append(f"{h['reclaimable']} reclaimable item(s)")
+        if h['stale_leases']:
+            parts.append(f"{len(h['stale_leases'])} stale lease(s)")
+        if h['conflicts']:
+            parts.append(f"{len(h['conflicts'])} checkout conflict(s)")
+
+        if h['status'] == 'error':
+            for c in h['collisions']:
+                self.issues.append(('collab_collision',
+                                    f"Identity '{c['id']}' is live from {len(c['workdirs'])} "
+                                    f"workdirs — give each agent its own seat "
+                                    f"(`mcp collab seat new <callsign>`)."))
+            if h['corrupt_files']:
+                self.issues.append(('collab_corrupt',
+                                    "Corrupt collab store files — run `mcp doctor --fix` "
+                                    "(or `mcp collab gc`) to clear them."))
+        if h['reclaimable']:
+            self.issues.append(('collab_reclaimable',
+                                f"{h['reclaimable']} reclaimable collab item(s) (orphaned "
+                                f"claims/checkouts, stray artifacts) — `mcp doctor --fix`."))
+
+        return {"name": "Collab Store", "status": h['status'],
+                "message": "; ".join(parts), "details": h}
+
     def run_all(self) -> list:
         """Run all diagnostic checks."""
         self.issues = []
@@ -303,17 +349,36 @@ class Doctor:
             self.check_git(),
             self.check_memory_db(),
             self.check_indexes(),
-            self.check_project_packs()
+            self.check_project_packs(),
+            self.check_collab()
         ]
+
+    def heal_collab(self) -> dict:
+        """Reap reclaimable collab store state via the engine janitor. Returns
+        the counts dict (empty when nothing to do). Never removes live state."""
+        try:
+            try:
+                from scripts import agent_collab
+            except ImportError:
+                import importlib
+                agent_collab = importlib.import_module('agent_collab')
+            project = os.environ.get('MCP_COLLAB_PROJECT') or self.root.name
+            counts = agent_collab.collab_heal(project)
+            if counts:
+                self.fixes_applied.append(f"collab store: reaped {counts}")
+            return counts
+        except Exception as e:
+            self.issues.append(('collab_heal', f"collab self-heal failed: {e}"))
+            return {}
 
     def repair(self) -> bool:
         """Attempt to auto-fix identified issues."""
         self.fixes_applied = []
-        if not self.issues:
-            return True
-
         # Re-fetch issues to ensure we have current list
         self.run_all()
+        self.heal_collab()       # collab store self-heal is always safe to run
+        if not self.issues and not self.fixes_applied:
+            return True
 
         mcp_script = self.root / 'mcp-agentic-rules' / 'mcp.py'
 

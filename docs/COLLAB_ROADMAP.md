@@ -20,6 +20,16 @@ Replaced by the direct invariant — only a STILL-VALID holder commits the share
 so `final == acks` is race-free and O(1). The engine's mutual exclusion (MUTEX-2) and the
 fenced register were correct throughout.
 
+## OPERABILITY: collab health in `mcp doctor` — SHIPPED 2026-06-13 (issue #12, Quasar)
+`mcp doctor` / `mcp verify` gained a Collab Store dimension: the reusable
+`agent_collab.collab_health(project)` (pure diagnosis — agents live/total, identity
+collisions, orphaned claims, abandoned checkouts, stale leases, corrupt files, stray
+artifacts, journal size, checkout conflicts) feeds the Doctor's text + `--json health_score`,
+and `mcp doctor --fix` self-heals via `collab_heal` (the janitor, now also reaping genuinely-
+corrupt records) — never touching live state. This consolidates the hand-cleanup a 100-agent
+fleet operator otherwise does (exactly what was done by hand during the freeze incident) into
+one command. selftest + a pytest pin detection and heal.
+
 ## HARNESS RESOURCE SAFETY — SHIPPED 2026-06-12/13 (Quasar)
 A verification harness must NEVER be able to take down the machine it runs on. The swarm
 spawned `agents` worker PROCESSES all at once; overlapping runs (the pre-push hook's swarm +
