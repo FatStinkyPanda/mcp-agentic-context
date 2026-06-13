@@ -20,6 +20,20 @@ Replaced by the direct invariant — only a STILL-VALID holder commits the share
 so `final == acks` is race-free and O(1). The engine's mutual exclusion (MUTEX-2) and the
 fenced register were correct throughout.
 
+## CROSS-MACHINE SYNC-SAFETY — PROVEN 2026-06-13 (issue #20, Quasar)
+The stated "not just different devices" goal is now VERIFIED, not just asserted. A test
+builds two independent stores, runs lease/journal/claim churn in each, merges their files
+both ways (union, as NSync/git propagation does), and proves the merged state is consistent:
+fence high-water = max via O_EXCL **marker union** (the next acquire mints a fence above
+BOTH machines — monotonicity preserved cross-machine), every journal event from both present
+and time-ordered, claims union, zero corruption. Satisfying confirmation that the fence.d
+marker design (introduced reactively during the soak) is precisely what makes fencing
+sync-safe — markers union by value where a single sidecar file would conflict. HONEST LIMITS
+(by design, documented): a *lease* on the same resource can be held on two machines until
+sync propagates (advisory cross-machine, resolved by fencing — the lower/owner-mismatched
+holder fails its next `lease_valid`); STRONG cross-machine exclusion for WORK is the GitHub
+`state:available` label CAS, not the file store. No gap surfaced; the test is a permanent guard.
+
 ## OPERABILITY: fleet metrics from the journal — SHIPPED 2026-06-13 (issue #16, Quasar)
 `agent_collab.collab_metrics(project, hours)` turns the append-only journal into a fleet
 analytics source: throughput (work started/completed/in-flight/dropped/lost-race), CYCLE

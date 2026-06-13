@@ -72,6 +72,82 @@ def test_collab_health_detects_and_heals(collab_store):
     assert any(c["id"] == "fresh-area" for c in ac.claims_all(P)), "live claim must survive"
 
 
+def test_collab_crossmachine_merge(tmp_path, monkeypatch):
+    """Prove the store contract is NSync-safe across DEVICES: two machines
+    operate independently, their files merge (union, as git-sync would), and
+    the merged state is consistent — fence high-water = max via marker union
+    (monotonicity preserved cross-machine), journal + claims union with no loss
+    or corruption. (Leases are advisory cross-machine by design; strong work
+    coordination uses the GitHub label CAS — out of scope here.)"""
+    import shutil
+    from scripts import agent_collab as ac
+    P = "xmachine"
+    storeA, storeB = tmp_path / "machineA", tmp_path / "machineB"
+    storeA.mkdir()
+    storeB.mkdir()
+    monkeypatch.setenv("MCP_NSYNC_AUTOSYNC", "0")
+    monkeypatch.delenv("AGENT_IDENTITY", raising=False)
+
+    def on(store):
+        monkeypatch.setenv("MCP_NSYNC_PATH", str(store))
+
+    # Machine A: agent 'forge' churns the editor lease 3x, journals, claims.
+    on(storeA)
+    for _ in range(3):
+        ok, la = ac.lease_acquire(P, "editor", "forge")
+        ac.lease_release(P, "editor", "forge", fence=la["fence"])
+    ac.journal_log(P, "forge", "evt.a1", {"m": "A"})
+    ac.journal_log(P, "forge", "evt.a2", {"m": "A"})
+    ac.claim_add(P, "area-a", "src/a/*", "forge")
+    max_a = la["fence"]                                  # 3
+
+    # Machine B: agent 'ember' (distinct callsign — the seat contract), 2x.
+    on(storeB)
+    for _ in range(2):
+        ok, lb = ac.lease_acquire(P, "editor", "ember")
+        ac.lease_release(P, "editor", "ember", fence=lb["fence"])
+    ac.journal_log(P, "ember", "evt.b1", {"m": "B"})
+    ac.claim_add(P, "area-b", "src/b/*", "ember")
+    max_b = lb["fence"]                                  # 2
+
+    assert max_a == 3 and max_b == 2, "each store mints fences independently"
+
+    base_a = storeA / ".nsync_agents" / "collab" / P
+    base_b = storeB / ".nsync_agents" / "collab" / P
+
+    def union_merge(src, dst):                           # NSync/git: add missing files
+        for p in src.rglob("*"):
+            if p.is_file():
+                tgt = dst / p.relative_to(src)
+                if not tgt.exists():
+                    tgt.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(p, tgt)
+    union_merge(base_a, base_b)
+    union_merge(base_b, base_a)
+
+    # On the merged store, fence high-water = max via O_EXCL marker UNION, so a
+    # subsequent acquire mints a fence strictly above BOTH machines'.
+    on(storeB)
+    assert ac._fence_read(P, "editor") == max(max_a, max_b) == 3
+    ok, lm = ac.lease_acquire(P, "editor", "forge")
+    assert lm["fence"] == 4, "next cross-machine fence must exceed both: %s" % lm["fence"]
+    ac.lease_release(P, "editor", "forge", fence=4)
+
+    # Journal union: every event from both machines, time-ordered, no loss.
+    evs = {e["event"] for e in ac.journal_tail(P, 200)}
+    assert {"evt.a1", "evt.a2", "evt.b1"} <= evs
+
+    # Claims union; nothing corrupt (every record file still parses).
+    assert {"area-a", "area-b"} <= {c["id"] for c in ac.claims_all(P)}
+    for sub in ("leases", "claims", "work"):
+        d = base_b / sub
+        if d.is_dir():
+            for f in d.glob("*.json"):
+                if f.name.endswith(".fence.json"):
+                    continue
+                assert ac._read_json(f) is not None, "merge corrupted %s" % f.name
+
+
 def test_work_next_critical_path(collab_store):
     """work next drains the critical path: within a priority tier, a bottleneck
     that unblocks downstream work outranks a non-bottleneck; priority still
