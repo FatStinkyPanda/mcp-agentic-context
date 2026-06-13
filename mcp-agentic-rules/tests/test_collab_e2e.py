@@ -72,6 +72,25 @@ def test_collab_health_detects_and_heals(collab_store):
     assert any(c["id"] == "fresh-area" for c in ac.claims_all(P)), "live claim must survive"
 
 
+def test_fence_dir_bounded_under_churn(collab_store):
+    """Sustained lease churn keeps fence.d bounded (acquire stays ~O(1)) while
+    fences stay strictly monotonic — the high-water marker is never pruned."""
+    from scripts import agent_collab as ac
+    P = "fence-churn"
+    last = 0
+    for _ in range(200):
+        ok, le = ac.lease_acquire(P, "hot", "a")
+        assert ok and le["fence"] == last + 1, \
+            "fences must be strictly monotonic: got %s after %d" % (le.get("fence"), last)
+        last = le["fence"]
+        ac.lease_release(P, "hot", "a", fence=le["fence"])
+    assert last == 200
+    fd = ac.lease_path(P, "hot").with_suffix(".fence.d")
+    count = sum(1 for f in fd.iterdir() if f.name.isdigit())
+    assert count <= ac.FENCE_KEEP + 4, \
+        "fence.d must stay bounded under churn, got %d markers" % count
+
+
 def test_collab_crossmachine_merge(tmp_path, monkeypatch):
     """Prove the store contract is NSync-safe across DEVICES: two machines
     operate independently, their files merge (union, as git-sync would), and

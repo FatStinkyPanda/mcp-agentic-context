@@ -299,24 +299,54 @@ def _fence_read(project: str, resource: str) -> int:
     return best
 
 
+FENCE_KEEP = 8                         # markers retained above the prune floor
+
+
 def _fence_reserve(project: str, resource: str, start: int) -> int:
     """Reserve a UNIQUE fence >= start. Each fence is an O_EXCL marker file —
     no shared-file rewrites at all, so fencing has NO replace races and no
     contention hot-spot (the 100-agent soak killed a worker on sidecar replace
     storms, and read-check-write bumps could even REGRESS the high-water).
     Uniqueness and monotonicity are structural: O_EXCL admits one winner per
-    number, and reservation precedes the lease file's existence."""
-    fence = max(int(start), _fence_read(project, resource) + 1)
+    number, and reservation precedes the lease file's existence. After minting,
+    the lowest markers are pruned (keeping a top window) so the directory stays
+    bounded — acquire is ~O(1) under sustained churn instead of O(markers); the
+    high-water marker is never removed, so monotonicity and the cross-machine
+    union both hold."""
     d = _fence_dir(project, resource)
+    fence = max(int(start), _fence_read(project, resource) + 1)
     for _ in range(100_000):
         try:
             os.close(os.open(d / str(fence), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            _fence_prune(d, fence)
             return fence
         except FileExistsError:
             fence += 1
-        except PermissionError:        # delete-pending from janitor pruning
+        except PermissionError:        # delete-pending from a concurrent prune
             fence += 1
     raise RuntimeError("fence space exhausted for %s" % resource)
+
+
+def _fence_prune(d: Path, minted: int):
+    """Keep the directory bounded: drop markers strictly below (minted -
+    FENCE_KEEP). Bounded work; never touches the just-minted high-water or the
+    top window, so the high-water (hence monotonicity + the cross-machine
+    union) is preserved. Removing low markers is safe — only the MAX defines
+    the high-water, and a synced-in old marker is simply re-pruned next time."""
+    floor = minted - FENCE_KEEP
+    if floor <= 0:
+        return
+    try:
+        old = sorted(int(f.name) for f in d.iterdir() if f.name.isdigit())
+    except OSError:
+        return
+    for n in old:
+        if n >= floor:
+            break                      # sorted ascending: nothing left below floor
+        try:
+            (d / str(n)).unlink()
+        except OSError:
+            pass
 
 
 def _fence_bump(project: str, resource: str, new_fence: int):
@@ -3063,20 +3093,26 @@ def selftest():
                 results.append(rf.read_text(encoding="utf-8") if rf.exists() else "?")
             ran = [r for r in results if r != "?"]      # subprocesses that finished
             winners = [r for r in ran if r.startswith("1:")]
-            # CORRECTNESS (always enforced): never two winners, winner only at
-            # fence 6. ENVIRONMENTAL (a loaded host where a subprocess can't
-            # reach the barrier in time) is NOT a correctness failure — only a
-            # full 4/4 finish demands EXACTLY one winner; a partial finish needs
-            # at-most-one. This keeps the gate from flaking under machine load
-            # while still catching any real mutual-exclusion violation.
-            if len(winners) > 1 or any(w != "1:6" for w in winners):
+            # CORRECTNESS (always enforced): never two winners; the winner's
+            # fence ADVANCED past the stale 5 (concurrent reservation may mint
+            # 6 AND 7, and whichever wins the lease file's O_EXCL create wins —
+            # so the winner fence is >5, not necessarily exactly 6). ENVIRON-
+            # MENTAL (a loaded host where a subprocess can't reach the barrier
+            # in time) is NOT a correctness failure — only a full 4/4 finish
+            # demands EXACTLY one winner; a partial finish needs at-most-one.
+            def _adv(w):                            # winner fence advanced past 5?
+                try:
+                    return int(w.split(":", 1)[1]) > 5
+                except (ValueError, IndexError):
+                    return False
+            if len(winners) > 1 or any(not _adv(w) for w in winners):
                 check("race smoke: exactly one winner across processes, fence advanced", False)
             elif len(ran) == 4:
                 check("race smoke: exactly one winner across processes, fence advanced",
                       len(winners) == 1)
             elif len(winners) == 1:
                 lines.append("PASS race smoke (partial: %d/4 finished under load; "
-                             "one winner @ fence 6)" % len(ran))
+                             "one winner, fence advanced)" % len(ran))
             else:
                 lines.append("SKIP race smoke (%d/4 subprocesses finished — host under load)"
                              % len(ran))
