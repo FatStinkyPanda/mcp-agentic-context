@@ -1690,17 +1690,23 @@ def _norm_key(p) -> str:
     return p
 
 
-def _load_impact_closure(paths, root=None):
-    """Expand paths to themselves + their transitive dependents using the
-    PREBUILT .mcp/impact_graph.json (built by `mcp impact --index`; NEVER
-    rebuilt inline — scheduling must stay cheap). Suffix-matched onto graph
-    keys; an absent graph degrades to the literal paths."""
-    out = {_norm_key(p) for p in paths if p}
+def _impact_index(root=None):
+    """Load + normalize the PREBUILT .mcp/impact_graph.json ONCE (imported_by,
+    keys/values _norm_key'd). Build it a single time per scheduling pass and
+    pass it to _closure_from_index for every candidate — re-reading and
+    re-normalizing the graph per candidate is O(candidates x graph), the
+    measured work_next bottleneck at 200 issues."""
     graph = _read_json(Path(root or Path.cwd()) / ".mcp" / "impact_graph.json")
     ib_raw = (graph or {}).get("imported_by") or {}
-    if not ib_raw or not out:
+    return {_norm_key(k): [_norm_key(v) for v in vs] for k, vs in ib_raw.items()}
+
+
+def _closure_from_index(paths, ib):
+    """Paths + their transitive dependents, using a prebuilt index (above).
+    Suffix-matched onto graph keys; an empty index degrades to literal paths."""
+    out = {_norm_key(p) for p in paths if p}
+    if not ib or not out:
         return out
-    ib = {_norm_key(k): [_norm_key(v) for v in vs] for k, vs in ib_raw.items()}
     frontier = []
     for p in list(out):
         if p in ib:
@@ -1714,6 +1720,12 @@ def _load_impact_closure(paths, root=None):
                 seen.add(dep)
                 frontier.append(dep)
     return seen
+
+
+def _load_impact_closure(paths, root=None):
+    """Back-compat one-shot wrapper (builds the index then the closure). Hot
+    paths should call _impact_index once and _closure_from_index per item."""
+    return _closure_from_index(paths, _impact_index(root))
 
 
 def work_next(project: str, who: str, runner=None, start: bool = False,
@@ -1732,9 +1744,10 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
         return False, note
     records = work_all(project)
     checked_out = {w.get("issue") for w in records}
+    ib = _impact_index()                               # read + normalize the graph ONCE
     busy = set()
     for w in records:
-        busy |= _load_impact_closure(w.get("paths", []))
+        busy |= _closure_from_index(w.get("paths", []), ib)
     open_numbers = {it.get("number") for it in issues}
     # critical path: how many OTHER open issues each issue unblocks. Draining a
     # bottleneck first lets the rest of the fleet proceed, so it ranks above a
@@ -1755,7 +1768,7 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
         if any(d in open_numbers for d in (form.get("depends") or [])):
             continue                                   # blocked — not ready
         paths = (form.get("paths") or extract_paths(it.get("body") or ""))[:8]
-        closure = _load_impact_closure(paths)
+        closure = _closure_from_index(paths, ib)
         overlap = sorted(closure & busy)
         prio = form.get("priority", "P2")
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(prio, 2)
