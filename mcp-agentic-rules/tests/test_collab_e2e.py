@@ -72,6 +72,47 @@ def test_collab_health_detects_and_heals(collab_store):
     assert any(c["id"] == "fresh-area" for c in ac.claims_all(P)), "live claim must survive"
 
 
+def test_collab_metrics(collab_store):
+    """Fleet analytics from the journal: throughput, cycle time (start->land
+    paired by issue), contention, and windowing (old events excluded)."""
+    import json as _json
+    import time as _time
+    from scripts import agent_collab as ac
+    P = "metrics-probe"
+    base = ac.collab_dir(P)
+    now = ac._now()
+
+    def ev(dt, who, event, data):
+        t = now - dt
+        return _json.dumps({"t": t, "ts": _time.ctime(t), "who": who,
+                            "event": event, "data": data})
+
+    (base / "journal.ndjson").write_text("\n".join([   # write-ok: test fixture
+        ev(3600, "a", "work.start", {"issue": 1}),
+        ev(3000, "a", "work.landed", {"issue": 1, "pr": 10}),     # cycle 10 min
+        ev(1800, "b", "work.start", {"issue": 2}),
+        ev(900,  "b", "work.done",  {"issue": 2}),                # cycle 15 min
+        ev(1200, "c", "work.start", {"issue": 3}),                # in-flight
+        ev(1000, "c", "work.lost_race", {"issue": 4}),
+        ev(500,  "d", "lease.acquired", {"resource": "x"}),
+        ev(400,  "d", "lease.broke_stale", {"resource": "x"}),
+        ev(300,  "e", "identity.collision", {}),
+        ev(90000, "old", "work.start", {"issue": 99}),            # 25h ago -> excluded
+    ]) + "\n", encoding="utf-8")
+
+    m = ac.collab_metrics(P, hours=24.0)
+    assert m["work"]["started"] == 3, "the 25h-old start is outside the window"
+    assert m["work"]["completed"] == 2
+    assert m["work"]["in_flight"] == 1
+    assert m["work"]["lost_race"] == 1
+    assert m["cycle_time"]["completed"] == 2
+    assert 12 <= m["cycle_time"]["mean_minutes"] <= 13       # mean of 10 and 15
+    assert m["leases"]["acquired"] == 1 and m["leases"]["broke_stale"] == 1
+    assert m["contention"]["collisions"] == 1 and m["contention"]["lost_races"] == 1
+    assert m["by_event"]["work.start"] == 3
+    assert {a["agent"] for a in m["top_agents"]} >= {"a", "b", "c", "d", "e"}
+
+
 def test_issue_form_template_matches_parser():
     """The CONTRACT pin: every parser field label appears verbatim as a form
     label in .github/ISSUE_TEMPLATE/agent-task.yml, and the template seeds

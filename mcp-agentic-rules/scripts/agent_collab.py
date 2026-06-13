@@ -57,6 +57,7 @@ Usage: mcp collab <command> [args] [--project P] [--as IDENTITY]
   status                              (presence + leases + claims + work + journal, one view)
   heartbeat [STATUS] [TASK]           (presence beat — also detects identity collisions)
   gc [--dry-run]                      (janitor pass: reap stale presence/claims/records/strays)
+  metrics [--hours N] [--json]        (fleet analytics: throughput, cycle time, contention)
   github-setup [--apply]              (provision labels + state:available seeding + the
                                        master ruleset requiring the CI checks; dry-run default)
   onboard                             (print the complete join-the-team procedure for an agent)
@@ -2250,6 +2251,90 @@ def collab_heal(project: str, who: str = None, dry_run: bool = False) -> dict:
     return _janitor_sweep(project, who or identity(), dry_run=dry_run)
 
 
+def _journal_window(project: str, cutoff: float):
+    """ALL journal events with t >= cutoff, across every writer segment + the
+    legacy single files, time-ordered. Bounded: segments are 2 MB-rotated and
+    archives whose mtime predates the window are skipped. Corruption-tolerant."""
+    base = collab_dir(project)
+    candidates = [base / "journal.ndjson", base / "journal.1.ndjson"]
+    jdir = base / "journal"
+    if jdir.is_dir():
+        candidates += sorted(jdir.glob("*.ndjson"))
+    out = []
+    for p in candidates:
+        try:
+            if p.stat().st_mtime < cutoff:
+                continue                                   # no in-window events
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue                                   # torn/corrupt line — skip
+            if isinstance(e, dict) and "event" in e and e.get("t", 0) >= cutoff:
+                out.append(e)
+    out.sort(key=lambda e: e.get("t", 0))
+    return out
+
+
+def collab_metrics(project: str, hours: float = 24.0) -> dict:
+    """Fleet productivity + contention analytics from the journal over a
+    window — the answer to 'how is my fleet performing?'. Pure read; the CLI,
+    the MCP server, and dashboards consume it. Cycle time pairs work.start with
+    the matching completion (landed/done) per issue."""
+    cutoff = _now() - hours * 3600
+    events = _journal_window(project, cutoff)
+    by_event, by_agent = {}, {}
+    starts = {}                                            # issue -> earliest start t
+    cycle = []                                             # minutes, start -> completion
+    work = {"started": 0, "completed": 0, "dropped": 0, "lost_race": 0}
+    leases = {"acquired": 0, "broke_stale": 0, "released": 0}
+    contention = {"collisions": 0, "merge_races": 0, "lost_races": 0}
+    for e in events:
+        ev = e.get("event", "")
+        by_event[ev] = by_event.get(ev, 0) + 1
+        by_agent[e.get("who", "?")] = by_agent.get(e.get("who", "?"), 0) + 1
+        data = e.get("data", {}) or {}
+        iss = data.get("issue")
+        if ev == "work.start":
+            work["started"] += 1
+            if iss is not None and iss not in starts:
+                starts[iss] = e.get("t", 0)
+        elif ev in ("work.landed", "work.done"):
+            work["completed"] += 1
+            if iss in starts:
+                cycle.append((e.get("t", 0) - starts[iss]) / 60.0)
+        elif ev == "work.drop":
+            work["dropped"] += 1
+        elif ev == "work.lost_race":
+            work["lost_race"] += 1
+            contention["lost_races"] += 1
+        elif ev == "lease.acquired":
+            leases["acquired"] += 1
+        elif ev == "lease.broke_stale":
+            leases["broke_stale"] += 1
+        elif ev == "lease.released":
+            leases["released"] += 1
+        elif ev == "identity.collision":
+            contention["collisions"] += 1
+        elif ev == "work.merge_race":
+            contention["merge_races"] += 1
+    work["in_flight"] = max(0, work["started"] - work["completed"] - work["dropped"])
+    ct = {"completed": len(cycle)}
+    if cycle:
+        s = sorted(cycle)
+        ct["mean_minutes"] = round(sum(s) / len(s), 1)
+        ct["p50_minutes"] = round(s[len(s) // 2], 1)
+        ct["p90_minutes"] = round(s[min(len(s) - 1, int(len(s) * 0.9))], 1)
+    top = sorted(by_agent.items(), key=lambda kv: -kv[1])[:10]
+    return {"project": project, "window_hours": hours, "events_total": len(events),
+            "by_event": by_event, "work": work, "leases": leases,
+            "contention": contention, "cycle_time": ct,
+            "top_agents": [{"agent": a, "events": n} for a, n in top]}
+
+
 def _janitor_maybe(project: str, who: str):
     """Opportunistic GC election (called from `status`): at most one janitor per
     600s across all agents, elected via the 'janitor' lease. Crash self-heals
@@ -3031,6 +3116,12 @@ def _status_lines(project: str, who: str):
     for ia, oa, ib, ob, ov in work_conflicts(project):
         lines.append(f"  [CONFLICT RADAR] #{ia} ({oa}) and #{ib} ({ob}) "
                      f"both touch: {', '.join(ov[:5])}")
+    m = collab_metrics(project, 24.0)
+    w, ct = m["work"], m["cycle_time"]
+    cyc = (" | cycle p50 %.0fm" % ct["p50_minutes"]) if ct.get("completed") else ""
+    lines += ["", "-- 24h metrics --",
+              f"  work: {w['started']} started, {w['completed']} completed, "
+              f"{w['in_flight']} in-flight{cyc}  (mcp collab metrics for more)"]
     lines += ["", "-- journal (last 10) --"]
     for e in journal_tail(project, 10):
         lines.append(f"  {e['ts']}  {e['who']:<16} {e['event']:<20} "
@@ -3257,6 +3348,30 @@ def main():
         counts = _janitor_sweep(project, who, dry_run="--dry-run" in args)
         mode = "would reap" if "--dry-run" in args else "reaped"
         print("[OK] gc %s: %s" % (mode, counts or "nothing"))
+        return 0
+
+    if cmd == "metrics":
+        hours = float(_pop_opt(args, "--hours", 24) or 24)
+        m = collab_metrics(project, hours)
+        if "--json" in args:
+            print(json.dumps(m, indent=2))
+            return 0
+        w, ct, con = m["work"], m["cycle_time"], m["contention"]
+        print("=== %s fleet metrics (last %gh, %d events) ==="
+              % (project, hours, m["events_total"]))
+        print("work:    started %d | completed %d | in-flight %d | dropped %d | lost-race %d"
+              % (w["started"], w["completed"], w["in_flight"], w["dropped"], w["lost_race"]))
+        if ct["completed"]:
+            print("cycle:   %d completed | mean %.0fm | p50 %.0fm | p90 %.0fm"
+                  % (ct["completed"], ct.get("mean_minutes", 0),
+                     ct.get("p50_minutes", 0), ct.get("p90_minutes", 0)))
+        print("leases:  acquired %d | broke-stale %d | released %d"
+              % (m["leases"]["acquired"], m["leases"]["broke_stale"], m["leases"]["released"]))
+        print("contention: collisions %d | merge-races %d | lost-races %d"
+              % (con["collisions"], con["merge_races"], con["lost_races"]))
+        if m["top_agents"]:
+            print("top agents: " + ", ".join("%s(%d)" % (a["agent"], a["events"])
+                                             for a in m["top_agents"][:5]))
         return 0
 
     if cmd == "github-setup":

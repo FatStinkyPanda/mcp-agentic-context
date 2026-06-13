@@ -211,6 +211,7 @@ Multi-Agent Collaboration:
     collab work done <issue#> [--pr URL] | drop <issue#> | tick <issue#> <item#>
     collab journal log <event> [--data JSON] | tail [N]
     collab gc [--dry-run]       Janitor pass (stale presence/claims/records/strays)
+    collab metrics [--hours N]  Fleet analytics: throughput, cycle time, contention
     collab github-setup [--apply]  Labels + state:available seeding + master ruleset
     collab selftest             60-check engine verification (throwaway store)
     collab swarmtest [--agents N] [--hammer]  Multi-process invariant proof
