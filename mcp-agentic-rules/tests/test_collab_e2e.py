@@ -72,6 +72,46 @@ def test_collab_health_detects_and_heals(collab_store):
     assert any(c["id"] == "fresh-area" for c in ac.claims_all(P)), "live claim must survive"
 
 
+def test_journal_segments_consolidated(collab_store):
+    """Inactive per-writer segments fold into one archive (so journal reads stay
+    fast at scale), the active segment survives, and no event is lost."""
+    import os
+    from scripts import agent_collab as ac
+    P = "jcons"
+    jdir = ac.collab_dir(P) / "journal"
+    jdir.mkdir(parents=True, exist_ok=True)
+    old = ac._now() - 2 * ac.GC_SEGMENT_IDLE_SECONDS
+    expected = set()
+    for w in range(12):                                    # 12 idle per-writer segments
+        seg = jdir / ("writer%d.%d.ndjson" % (w, 1000 + w))
+        ev = "old.%d" % w
+        seg.write_text(_json_line(ev, w), encoding="utf-8")   # write-ok: test fixture
+        os.utime(seg, (old, old))
+        expected.add(ev)
+    # a FRESH segment (live writer) — must be preserved
+    fresh = jdir / "live.9999.ndjson"
+    fresh.write_text(_json_line("fresh.evt", 99), encoding="utf-8")  # write-ok: fixture
+    expected.add("fresh.evt")
+
+    before = len(list(jdir.glob("*.ndjson")))
+    counts = ac._janitor_sweep(P, "janitor-bot")
+    after = list(jdir.glob("*.ndjson"))
+
+    assert counts.get("journal_consolidated", 0) >= 12, counts
+    assert fresh.exists(), "the active segment must survive consolidation"
+    assert len(after) < before, "segment count must collapse (%d -> %d)" % (before, len(after))
+    seen = {e["event"] for e in ac.journal_tail(P, 1000)}
+    assert expected <= seen, "consolidation must lose NO event: missing %s" % (expected - seen)
+
+
+def _json_line(event, n):
+    import json as _json
+    import time as _time
+    from scripts import agent_collab as ac
+    return _json.dumps({"t": ac._now(), "ts": _time.ctime(), "who": "w%d" % n,
+                        "event": event, "data": {"n": n}}) + "\n"
+
+
 def test_fence_dir_bounded_under_churn(collab_store):
     """Sustained lease churn keeps fence.d bounded (acquire stays ~O(1)) while
     fences stay strictly monotonic — the high-water marker is never pruned."""
