@@ -82,7 +82,6 @@ def worker_main(a) -> int:
 
     if a.role == "mutex":
         token = sdir / "token.json"
-        counter = sdir / "counter.json"
         for _ in range(a.iters):
             _touch(progress)
             fence = None
@@ -99,29 +98,30 @@ def worker_main(a) -> int:
                 out["starved"] += 1
                 continue
             ac.atomic_write_json(token, {"who": me, "fence": fence})
+            # the COUNTER lives in the fenced state register: read the
+            # prevailing incarnation, chain a +1 onto it
+            cur, cur_fence = ac.fenced_read(a.scope, "swarm-mutex")
+            n = (cur or {}).get("n", 0)
             if a.hammer and random.random() < 0.10:
                 time.sleep(a.ttl * 1.5)              # oversleep: lose the lease on purpose
             else:
                 time.sleep(random.uniform(0, 0.003))
+            ac.fenced_write(a.scope, "swarm-mutex", fence,
+                            {"n": n + 1, "prev": cur_fence})
             still, _ = ac.lease_valid(a.scope, "swarm-mutex", me, fence)
             tok = ac._read_json(token) or {}
             if still and tok.get("who") != me:
                 if int(tok.get("fence", -1)) >= fence:
-                    # a token from an EQUAL/HIGHER fence while we validly hold
-                    # = two simultaneous valid holders: true exclusion breach
-                    out["violations"] += 1
+                    out["violations"] += 1           # two valid holders: impossible
                 else:
-                    # a LOWER-fence token = the Kleppmann zombie write: an
-                    # expired holder's delayed write landed on our hold. The
-                    # lease layer cannot prevent this — fence-checking at the
-                    # resource (exactly what the counter protocol does) can.
-                    out["stomps"] += 1
-            if still:                                # fenced write: only a VALID holder mutates
-                cur = ac._read_json(counter) or {"n": 0}
-                ac.atomic_write_json(counter, {"n": cur.get("n", 0) + 1})
+                    out["stomps"] += 1               # zombie write on the unfenced token
+            if still:
+                # the write provably landed inside our hold: the NEXT holder
+                # must read it — our increment is chained, so we ack it
                 out["acks"] += 1
+                out.setdefault("ack_fences", []).append(fence)
             else:
-                out["lost"] += 1
+                out["lost"] += 1                     # late write = orphan, never chained
             ac.lease_release(a.scope, "swarm-mutex", me, fence=fence)
 
     elif a.role == "journal":
@@ -284,14 +284,41 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                        "ok": clean, "detail": detail})
 
         if role == "mutex" and outs:
-            counter = (ac._read_json(sdir / "counter.json") or {}).get("n", 0)
+            # Reconstruct the fenced chain: from the highest-fence entry walk
+            # prev links. ACKED increments (write landed inside the hold) MUST
+            # all be on the chain with consecutive values; orphans are the
+            # late zombie writes the register makes inert by construction.
+            sdir_state = (_collab_base(store, scope) / "leases"
+                          / "swarm-mutex.state.d")
+            entries = {}
+            if sdir_state.is_dir():
+                for f in sdir_state.glob("*.json"):
+                    data = ac._read_json(f)
+                    if data is not None and f.stem.isdigit():
+                        entries[int(f.stem)] = data
+            chain = []
+            cursor = max(entries) if entries else 0
+            while cursor and cursor in entries:
+                chain.append((cursor, entries[cursor].get("n", -1)))
+                cursor = int(entries[cursor].get("prev", 0))
+            chain.reverse()
+            values = [v for _, v in chain]
+            chain_fences = {f for f, _ in chain}
+            consecutive = values == list(range(1, len(values) + 1))
+            acked = {f for o in outs for f in o.get("ack_fences", [])}
             acks = sum(o["acks"] for o in outs)
             viol = sum(o["violations"] for o in outs)
             lost = sum(o["lost"] for o in outs)
-            checks.append({"name": "SWARM-MUTEX-1 counter == acknowledged increments",
-                           "ok": counter == acks,
-                           "detail": "counter=%d acks=%d lost=%d starved=%d"
-                                     % (counter, acks, lost, sum(o["starved"] for o in outs))})
+            counter = values[-1] if values else 0
+            orphans = len(entries) - len(chain)
+            checks.append({"name": "SWARM-MUTEX-1 fenced chain: consecutive values, "
+                                   "every acked increment chained",
+                           "ok": consecutive and acked <= chain_fences,
+                           "detail": "counter=%d chain=%d acks=%d lost=%d starved=%d "
+                                     "orphans=%d (orphans are zombie writes the fenced "
+                                     "register made inert)"
+                                     % (counter, len(chain), acks, lost,
+                                        sum(o["starved"] for o in outs), orphans)})
             stomps = sum(o.get("stomps", 0) for o in outs)
             checks.append({"name": "SWARM-MUTEX-2 zero mutual-exclusion violations",
                            "ok": viol == 0,

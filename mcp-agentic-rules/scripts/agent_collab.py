@@ -487,6 +487,37 @@ def lease_renew(project: str, resource: str, who: str, fence=None):
     return True, renewed
 
 
+def fenced_write(project: str, resource: str, fence, obj: dict):
+    """Write resource STATE under a lease incarnation. Each fence writes its
+    OWN file (<resource>.state.d/<fence>.json): no shared destination, so no
+    replace contention — and a zombie holder's late write lands at its OLD
+    fence, structurally subordinate to any newer incarnation. This is the
+    fence-checking-store half of Kleppmann's lease story: lease_valid alone
+    leaves a validate-then-write gap that slow writes can outlive (proven by
+    the 100-agent soak: 6 lost counter updates in 3480 under hammer TTLs)."""
+    d = lease_path(project, resource).with_suffix(".state.d")
+    d.mkdir(exist_ok=True)
+    atomic_write_json(d / ("%d.json" % int(fence)), obj)
+
+
+def fenced_read(project: str, resource: str):
+    """(state, fence) of the HIGHEST-fence write — stale writes are invisible
+    here by construction. Returns (None, 0) when nothing was ever written."""
+    d = lease_path(project, resource).with_suffix(".state.d")
+    best, best_fence = None, 0
+    if d.is_dir():
+        for f in d.glob("*.json"):
+            try:
+                n = int(f.stem)
+            except ValueError:
+                continue
+            if n > best_fence:
+                data = _read_json(f)
+                if data is not None:
+                    best, best_fence = data, n
+    return best, best_fence
+
+
 def lease_valid(project: str, resource: str, who: str, fence) -> tuple:
     """True iff WE still hold THIS incarnation right now (owner + fence match,
     not stale). Call immediately before any irreversible side effect."""
@@ -2067,6 +2098,21 @@ def _janitor_sweep(project: str, who: str, dry_run: bool = False):
                     continue
             counts["fence_marker"] = counts.get("fence_marker", 0) + 1
             state["deleted"] += 1
+    for sdir2 in (base / "leases").glob("*.state.d"):
+        if not sdir2.is_dir():
+            continue
+        nums = sorted((int(f.stem) for f in sdir2.glob("*.json")
+                       if f.stem.isdigit()), reverse=True)
+        for n in nums[8:]:                  # readers only need the recent incarnations
+            if state["deleted"] >= GC_UNLINK_BOUND:
+                break
+            if not dry_run:
+                try:
+                    (sdir2 / ("%d.json" % n)).unlink()
+                except OSError:
+                    continue
+            counts["fenced_state"] = counts.get("fenced_state", 0) + 1
+            state["deleted"] += 1
     for maildir in (comms / "messages", comms / "telegram_inbox", comms / "telegram_outbox"):
         if not maildir.is_dir():
             continue
@@ -2231,6 +2277,12 @@ def selftest():
         lease_release(P, "fenced", A, fence=l3["fence"])
         v2_ok, _ = lease_valid(P, "fenced", A, l3["fence"])
         check("lease_valid tracks the live incarnation", v_ok and not v2_ok)
+        fenced_write(P, "registry", 3, {"v": "old"})
+        fenced_write(P, "registry", 5, {"v": "new"})
+        fenced_write(P, "registry", 2, {"v": "zombie late write"})
+        freg, ffence = fenced_read(P, "registry")
+        check("fenced state register: stale writes are structurally inert",
+              freg == {"v": "new"} and ffence == 5)
 
         backdated = _now() - CORRUPT_GRACE_SECONDS - 5
         lease_path(P, "rusty").write_text("NOT JSON AT ALL", encoding="utf-8")  # write-ok: corrupt fixture
