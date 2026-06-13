@@ -16,7 +16,13 @@ fi
 
 export MCP_NSYNC_AUTOSYNC=0
 $PYTHON_CMD mcp-agentic-rules/scripts/agent_collab.py selftest
-$PYTHON_CMD -m pytest mcp-agentic-rules/tests -q -m "not soak"
+# Run the heavy suite (ML/vector tests load torch+models) and the
+# subprocess-spawning swarm tests in SEPARATE processes: bundling them lets
+# the swarm subprocesses stack on top of the parent's accumulated ML imports
+# and exhaust RAM on memory-constrained machines. Two invocations keep full
+# coverage while each runs in a fresh, bounded-memory process (mirrors CI).
+$PYTHON_CMD -m pytest mcp-agentic-rules/tests -q -m "not soak and not swarm"
+$PYTHON_CMD -m pytest mcp-agentic-rules/tests -q -m "swarm"
 $PYTHON_CMD mcp-agentic-rules/scripts/collab_swarm.py run --agents 6 --iters 12
 $PYTHON_CMD mcp-agentic-rules/mcp.py security .
 
