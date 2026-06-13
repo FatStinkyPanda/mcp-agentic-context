@@ -341,15 +341,26 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                     data = ac._read_json(f)
                     if data is not None and f.stem.isdigit():
                         entries[int(f.stem)] = data
+            # Walk prev-links from the highest fence. CYCLE-SAFE: a visited set
+            # + a hard bound guarantee termination — prev links SHOULD strictly
+            # decrease, but a verification check must never infinite-loop (and
+            # OOM) if unexpected data ever violates that. A detected cycle fails
+            # the check loudly instead of hanging.
             chain = []
             cursor = max(entries) if entries else 0
-            while cursor and cursor in entries:
+            visited = set()
+            cycle = False
+            while cursor and cursor in entries and len(chain) <= len(entries):
+                if cursor in visited:
+                    cycle = True
+                    break
+                visited.add(cursor)
                 chain.append((cursor, entries[cursor].get("n", -1)))
                 cursor = int(entries[cursor].get("prev", 0))
             chain.reverse()
             values = [v for _, v in chain]
             chain_fences = {f for f, _ in chain}
-            consecutive = values == list(range(1, len(values) + 1))
+            consecutive = (not cycle) and values == list(range(1, len(values) + 1))
             acked = {f for o in outs for f in o.get("ack_fences", [])}
             acks = sum(o["acks"] for o in outs)
             viol = sum(o["violations"] for o in outs)
@@ -360,10 +371,10 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                                    "every acked increment chained",
                            "ok": consecutive and acked <= chain_fences,
                            "detail": "counter=%d chain=%d acks=%d lost=%d starved=%d "
-                                     "orphans=%d (orphans are zombie writes the fenced "
-                                     "register made inert)"
+                                     "orphans=%d cycle=%s (orphans are zombie writes the "
+                                     "fenced register made inert)"
                                      % (counter, len(chain), acks, lost,
-                                        sum(o["starved"] for o in outs), orphans)})
+                                        sum(o["starved"] for o in outs), orphans, cycle)})
             stomps = sum(o.get("stomps", 0) for o in outs)
             checks.append({"name": "SWARM-MUTEX-2 zero mutual-exclusion violations",
                            "ok": viol == 0,
