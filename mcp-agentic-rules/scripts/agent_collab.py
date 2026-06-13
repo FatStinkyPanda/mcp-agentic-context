@@ -1692,10 +1692,12 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
     """How a fleet self-organizes: pick the best NON-CONFLICTING ready issue,
     no human dispatcher. Candidates come from the shared issue cache; the busy
     set is every active checkout's impact closure; ranking is (no-overlap,
-    priority, blast radius, number) with per-agent rotation inside the equal
-    head tier so identical fleets fan out instead of stampeding one issue.
-    --start checks the pick out (NEVER an overlapping one — those need an
-    explicit, journaled `work start`). Returns (ok, message)."""
+    priority, MOST-UNBLOCKING, blast radius, number) — within a priority tier a
+    bottleneck that unblocks more downstream work is drained first — with
+    per-agent rotation inside the equal (overlap, priority, unblocks) tier so
+    identical fleets fan out instead of stampeding one issue. --start checks the
+    pick out (NEVER an overlapping one — those need an explicit, journaled
+    `work start`). Returns (ok, message)."""
     ok, issues, note = issues_cached(project, who, runner=runner)
     if not ok:
         return False, note
@@ -1705,6 +1707,14 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
     for w in records:
         busy |= _load_impact_closure(w.get("paths", []))
     open_numbers = {it.get("number") for it in issues}
+    # critical path: how many OTHER open issues each issue unblocks. Draining a
+    # bottleneck first lets the rest of the fleet proceed, so it ranks above a
+    # same-priority non-bottleneck.
+    unblocks = {}
+    for it in issues:
+        for d in (parse_issue_form(it.get("body") or "").get("depends") or []):
+            if d in open_numbers and d != it.get("number"):
+                unblocks[d] = unblocks.get(d, 0) + 1
     ranked = []
     for it in issues:
         n = it.get("number")
@@ -1720,22 +1730,27 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
         overlap = sorted(closure & busy)
         prio = form.get("priority", "P2")
         prio_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(prio, 2)
+        u = unblocks.get(n, 0)
         ranked.append({"n": n, "title": it.get("title", ""), "overlap": overlap,
-                       "prio": prio,
-                       "rank": (1 if overlap else 0, prio_rank, len(closure), n)})
+                       "prio": prio, "unblocks": u, "blast": len(closure),
+                       # (no-overlap, priority, MOST-unblocking, smallest blast, number)
+                       "rank": (1 if overlap else 0, prio_rank, -u, len(closure), n)})
     ranked.sort(key=lambda r: r["rank"])
     if not ranked:
         return False, "no ready candidates %s" % note
-    head_key = ranked[0]["rank"][:2]
-    tier = [r for r in ranked if r["rank"][:2] == head_key]
+    # rotation tier = picks equivalent in (overlap, priority, unblocks): identical
+    # fleets fan out across equally-good work, while a unique bottleneck stays #1.
+    head_key = ranked[0]["rank"][:3]
+    tier = [r for r in ranked if r["rank"][:3] == head_key]
     rot = int(hashlib.sha1(who.encode("utf-8")).hexdigest(), 16) % len(tier)
-    ordered = tier[rot:] + tier[:rot] + [r for r in ranked if r["rank"][:2] != head_key]
+    ordered = tier[rot:] + tier[:rot] + [r for r in ranked if r["rank"][:3] != head_key]
     if not start:
         lines = ["ready work %s (best first for %s):" % (note, who)]
         for r in ordered[:10]:
             mark = (" [OVERLAP: %s]" % ", ".join(r["overlap"][:3])) if r["overlap"] else ""
-            lines.append("  #%-5d %s  [%s] [blast=%d]%s"
-                         % (r["n"], r["title"][:55], r["prio"], r["rank"][2], mark))
+            unb = (" [unblocks=%d]" % r["unblocks"]) if r["unblocks"] else ""
+            lines.append("  #%-5d %s  [%s] [blast=%d]%s%s"
+                         % (r["n"], r["title"][:55], r["prio"], r["blast"], unb, mark))
         lines.append("run `work next --start` to check the best one out")
         return True, "\n".join(lines)
     for r in [x for x in ordered if not x["overlap"]][:5]:
