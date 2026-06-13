@@ -309,45 +309,40 @@ def _fence_reserve(project: str, resource: str, start: int) -> int:
     contention hot-spot (the 100-agent soak killed a worker on sidecar replace
     storms, and read-check-write bumps could even REGRESS the high-water).
     Uniqueness and monotonicity are structural: O_EXCL admits one winner per
-    number, and reservation precedes the lease file's existence. After minting,
-    the lowest markers are pruned (keeping a top window) so the directory stays
-    bounded — acquire is ~O(1) under sustained churn instead of O(markers); the
-    high-water marker is never removed, so monotonicity and the cross-machine
+    number, and reservation precedes the lease file's existence.
+
+    ONE iterdir per attempt: the same directory listing yields the high-water
+    AND drives the prune (the lowest markers are dropped, keeping a top window),
+    so acquire is ~O(1) under churn AND touches fence.d's directory once, not
+    thrice — fewer syscalls per acquire matters under 100-agent contention. The
+    high-water marker is never removed, so monotonicity + the cross-machine
     union both hold."""
     d = _fence_dir(project, resource)
-    fence = max(int(start), _fence_read(project, resource) + 1)
+    legacy = _read_json(_fence_path(project, resource))
+    floor_seed = int(legacy.get("fence", 0)) if legacy else 0
     for _ in range(100_000):
         try:
-            os.close(os.open(d / str(fence), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            _fence_prune(d, fence)
-            return fence
-        except FileExistsError:
-            fence += 1
-        except PermissionError:        # delete-pending from a concurrent prune
-            fence += 1
-    raise RuntimeError("fence space exhausted for %s" % resource)
-
-
-def _fence_prune(d: Path, minted: int):
-    """Keep the directory bounded: drop markers strictly below (minted -
-    FENCE_KEEP). Bounded work; never touches the just-minted high-water or the
-    top window, so the high-water (hence monotonicity + the cross-machine
-    union) is preserved. Removing low markers is safe — only the MAX defines
-    the high-water, and a synced-in old marker is simply re-pruned next time."""
-    floor = minted - FENCE_KEEP
-    if floor <= 0:
-        return
-    try:
-        old = sorted(int(f.name) for f in d.iterdir() if f.name.isdigit())
-    except OSError:
-        return
-    for n in old:
-        if n >= floor:
-            break                      # sorted ascending: nothing left below floor
-        try:
-            (d / str(n)).unlink()
+            nums = sorted(int(f.name) for f in d.iterdir() if f.name.isdigit())
         except OSError:
-            pass
+            nums = []
+        high = max([floor_seed] + nums) if nums or floor_seed else 0
+        fence = max(int(start), high + 1)
+        try:
+            os.close(os.open(d / str(fence), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            continue                       # lost the number — re-read and retry
+        except PermissionError:            # delete-pending from a concurrent prune
+            continue
+        prune_floor = fence - FENCE_KEEP   # drop the lowest, keep the top window
+        for n in nums:
+            if n >= prune_floor:
+                break                      # sorted ascending: nothing else below
+            try:
+                (d / str(n)).unlink()
+            except OSError:
+                pass
+        return fence
+    raise RuntimeError("fence space exhausted for %s" % resource)
 
 
 def _fence_bump(project: str, resource: str, new_fence: int):
@@ -578,9 +573,10 @@ def lease_release(project: str, resource: str, who: str, fence=None):
     if parsed and not ours and not _lease_stale(parsed):
         _restore_or_journal(path, tomb, parsed, project, who, "lease")
         return False, parsed
-    # record the retired fence in the sidecar: even if the acquire that minted
-    # it crashed before its own bump, the high-water mark survives retirement
-    _fence_bump(project, resource, int((parsed or {}).get("fence", 0) or 0))
+    # No fence bump on retirement: the marker was created at acquire time (it
+    # outlives the lease file and travels with it cross-machine), and stale
+    # takeover passes taken_fence as the reserve floor — so the high-water is
+    # already covered without re-touching fence.d on every release.
     try:
         tomb.unlink()
     except OSError:
@@ -607,7 +603,9 @@ def lease_break(project: str, resource: str, who: str):
     if parsed and not _lease_stale(parsed):
         _restore_or_journal(path, tomb, parsed, project, who, "lease")
         return False, parsed
-    _fence_bump(project, resource, int((parsed or {}).get("fence", 0) or 0))
+    # no fence bump: the broken lease's marker persists, and the next acquirer
+    # passes its taken_fence as the reserve floor (see lease_acquire) — the
+    # high-water is covered without re-touching fence.d here
     try:
         tomb.unlink()
     except OSError:
