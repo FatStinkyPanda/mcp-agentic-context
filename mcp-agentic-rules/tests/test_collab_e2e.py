@@ -72,6 +72,43 @@ def test_collab_health_detects_and_heals(collab_store):
     assert any(c["id"] == "fresh-area" for c in ac.claims_all(P)), "live claim must survive"
 
 
+def test_work_next_critical_path(collab_store):
+    """work next drains the critical path: within a priority tier, a bottleneck
+    that unblocks downstream work outranks a non-bottleneck; priority still
+    wins across tiers; blocked issues stay excluded."""
+    import json as _json
+    import re as _re
+    from scripts import agent_collab as ac
+    P = "cp-probe"
+    issues = [
+        {"number": 105, "title": "urgent", "labels": [{"name": "state:available"}],
+         "body": "### Priority\n\nP0"},                              # P0 -> first
+        {"number": 100, "title": "bottleneck", "labels": [{"name": "state:available"}],
+         "body": "### Files/areas touched\n\nsrc/a.py\n\n### Priority\n\nP2"},  # unblocks 3
+        {"number": 104, "title": "regular", "labels": [{"name": "state:available"}],
+         "body": "### Files/areas touched\n\nsrc/b.py\n\n### Priority\n\nP2"},   # unblocks 0
+        {"number": 101, "title": "d1", "labels": [{"name": "state:available"}],
+         "body": "### Blocked by\n\n#100\n\n### Priority\n\nP2"},
+        {"number": 102, "title": "d2", "labels": [{"name": "state:available"}],
+         "body": "### Blocked by\n\n#100\n\n### Priority\n\nP2"},
+        {"number": 103, "title": "d3", "labels": [{"name": "state:available"}],
+         "body": "### Blocked by\n\n#100\n\n### Priority\n\nP2"},
+    ]
+
+    def fake(args):
+        if args[:2] == ["issue", "list"]:
+            return True, _json.dumps(issues)
+        return False, "unhandled %s" % args[:3]
+
+    ok, msg = ac.work_next(P, "agentX", runner=fake)
+    assert ok, msg
+    order = [int(x) for x in _re.findall(r"#(\d+)", msg)]
+    assert order[:3] == [105, 100, 104], \
+        "P0 first, then the P2 bottleneck before the P2 regular: %s" % order
+    assert "unblocks=3" in msg, "the bottleneck's unblock count is shown"
+    assert not ({101, 102, 103} & set(order)), "blocked issues are excluded"
+
+
 def test_collab_metrics(collab_store):
     """Fleet analytics from the journal: throughput, cycle time (start->land
     paired by issue), contention, and windowing (old events excluded)."""

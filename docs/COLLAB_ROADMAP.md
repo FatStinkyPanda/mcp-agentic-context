@@ -139,9 +139,13 @@ files fail OPEN. `work list` rides the cache. Selftest 57/57.
 picks the best NON-CONFLICTING ready issue with no human dispatcher: candidates from the
 shared cache, minus checked-out/labeled/blocked issues; the busy set is every active
 checkout's impact closure (prebuilt `.mcp/impact_graph.json`, suffix-matched, never rebuilt
-inline); ranked by (no-overlap, priority, blast radius, number) with per-agent sha1
-rotation inside the equal head tier so identical fleets fan out instead of stampeding one
-issue. `--start` checks the pick out and NEVER auto-picks overlapping work. Plus a
+inline); ranked by (no-overlap, priority, MOST-UNBLOCKING, blast radius, number) with
+per-agent sha1 rotation inside the equal (overlap, priority, unblocks) tier so identical
+fleets fan out instead of stampeding one issue. `--start` checks the pick out and NEVER
+auto-picks overlapping work. **CRITICAL-PATH added 2026-06-13 (issue #18):** within a
+priority tier, an issue that unblocks more downstream `Blocked by` work is drained first
+(`[unblocks=N]` shown), so the fleet naturally clears bottlenecks instead of stranding
+blocked work. Plus a
 landing-race guard born from production: auto-merge fired on an old head concurrently with
 a fresh push on PR #4 and silently dropped a commit — `work land` now refuses to finalize
 while local commits are missing from the merged tree (journals `work.merge_race`).
