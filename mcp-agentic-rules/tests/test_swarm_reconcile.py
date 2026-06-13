@@ -29,8 +29,91 @@ FIXTURE = {
 }
 
 
+NOW = 1_000_000_000.0
+RECLAIM_FIXTURE = {"issues": [
+    {"number": 20, "labels": ["in-progress", "agent:dead"], "comments": [],
+     "updated_at": NOW - 30 * 3600},                # stale (>24h) -> reclaim
+    {"number": 21, "labels": ["in-progress", "agent:live"], "comments": [],
+     "updated_at": NOW - 3600},                     # fresh -> leave alone
+    {"number": 22, "labels": ["state:available"], "comments": []},   # not in-progress
+]}
+
+
 def _seed_actions(actions):
     return sorted(a["issue"] for a in actions if a["action"] == "seed")
+
+
+def _reclaim_actions(actions):
+    return sorted(a["issue"] for a in actions if a["action"] == "reclaim")
+
+
+def _reclaim_fake_gh(state):
+    def fake(args):
+        if args[:2] == ["issue", "edit"]:
+            iss = next(i for i in state["issues"] if i["number"] == int(args[2]))
+            if "--remove-label" in args:
+                gone = set(args[args.index("--remove-label") + 1].split(","))
+                iss["labels"] = [x for x in iss["labels"] if x not in gone]
+            if "--add-label" in args:
+                add = args[args.index("--add-label") + 1]
+                if add not in iss["labels"]:
+                    iss["labels"].append(add)
+            if "--body" in args:
+                iss["body"] = args[args.index("--body") + 1]
+            return True, ""
+        if args[:2] == ["issue", "comment"]:
+            return True, ""
+        if args[:2] == ["issue", "create"]:
+            state["issues"].append({"number": 99, "title": sr.DASHBOARD_TITLE,
+                                    "labels": [sr.DASHBOARD_LABEL], "comments": [],
+                                    "updated_at": NOW,
+                                    "body": args[args.index("--body") + 1]})
+            return True, "https://github.com/o/r/issues/99"
+        if args[:2] in (["issue", "pin"], ["label", "create"]):
+            return True, ""
+        if args[:1] == ["api"] and "-X" in args and "DELETE" in args:
+            cid = int(args[-1].rsplit("/", 1)[-1])
+            for i in state["issues"]:
+                i["comments"] = [c for c in i["comments"] if c["id"] != cid]
+            return True, ""
+        return False, "unhandled %s" % args[:3]
+    return fake
+
+
+def test_reclaim_only_stale_in_progress():
+    actions = sr.plan(RECLAIM_FIXTURE, now=NOW)
+    assert _reclaim_actions(actions) == [20], "only the abandoned checkout is reclaimed"
+    r = next(a for a in actions if a["action"] == "reclaim")
+    assert set(r["remove"]) == {"in-progress", "agent:dead"}
+    assert _seed_actions(actions) == [], "available/in-progress issues are not seeded"
+
+
+def test_iso_updatedat_drives_reclaim():
+    """ISO-8601 updatedAt (as GraphQL returns) is honored, not just epochs."""
+    state = {"issues": [
+        {"number": 30, "labels": ["in-progress", "agent:x"], "comments": [],
+         "updated_at": sr._iso_to_epoch("2000-01-01T00:00:00Z")},   # before NOW (2001)
+    ]}
+    assert _reclaim_actions(sr.plan(state, now=NOW)) == [30]
+
+
+def test_reclaim_converges_and_board_reflects():
+    state = json.loads(json.dumps(RECLAIM_FIXTURE))
+    sr.GH_RUNNER = _reclaim_fake_gh(state)
+    try:
+        first = sr.plan(state, now=NOW)
+        sr.apply(first, "o/r")
+        second = sr.plan(state, now=NOW)
+    finally:
+        sr.GH_RUNNER = None
+    iss20 = next(i for i in state["issues"] if i["number"] == 20)
+    assert "in-progress" not in iss20["labels"] and "agent:dead" not in iss20["labels"]
+    assert "state:available" in iss20["labels"]
+    assert _reclaim_actions(second) == [], "a reclaimed issue re-plans to NO reclaim"
+    assert _seed_actions(second) == [], "the reclaimed issue is available, not re-seeded"
+    board = next((a["body"] for a in first if a["action"] == "dashboard_create"), None)
+    assert board and "#20" in board and "ready" in board, \
+        "the board shows the reclaimed issue as ready"
 
 
 def test_plan_seeds_only_uncoordinated_issues():

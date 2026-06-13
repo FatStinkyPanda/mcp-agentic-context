@@ -140,8 +140,14 @@ Selftest 60/60.
 `agent-reconcile.yml` (cron */10, dispatch, repository_dispatch[agent-sync]; singleton;
 GITHUB_TOKEN only) runs `swarm_reconcile.py`: ONE batched GraphQL read, a pure
 level-triggered `plan()` (re-seed `state:available` on label-less open issues, dedupe
-agent-impact comment families keeping the lowest id), individually idempotent mutations,
-ndjson audit log. Tests prove convergence to zero actions.
+agent-impact comment families keeping the lowest id, maintain the pinned Swarm Dashboard),
+individually idempotent mutations, ndjson audit log. Tests prove convergence to zero actions.
+**RECLAIM added 2026-06-13 (issue #14):** an in-progress issue with no GitHub activity for
+>RECLAIM_HOURS (24h) is abandoned — strip `in-progress` + `agent:*`, return it to
+`state:available`, post an audit comment. Closes the GitHub-side durability gap (a crashed
+agent's checkout otherwise stays in-progress forever); composes with `work verify`, which
+self-drops a wrongly-reclaimed live agent's local checkout. Driven by `updatedAt` (refreshed
+by `work tick` and the reclaim comment itself), idempotent (no in-progress -> no re-reclaim).
 
 **THE SCALE BLUEPRINT IS COMPLETE (items 1-20, plus the self-update system).** The full
 loop stands: form-issues -> atomic checkout (label CAS) -> fleet self-assignment

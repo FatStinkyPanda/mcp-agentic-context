@@ -40,6 +40,7 @@ from scripts import agent_collab as ac                          # noqa: E402
 MARKER = "<!-- agent-impact -->"
 DASHBOARD_LABEL = "swarm-dashboard"
 DASHBOARD_TITLE = "Swarm Dashboard"
+RECLAIM_HOURS = 24.0   # in-progress with no GitHub activity this long = abandoned
 GRAPHQL_QUERY = """
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
@@ -49,6 +50,7 @@ query($owner: String!, $name: String!) {
         number
         title
         body
+        updatedAt
         labels(first: 20) { nodes { name } }
         comments(first: 100) { nodes { databaseId body } }
       }
@@ -56,6 +58,20 @@ query($owner: String!, $name: String!) {
   }
 }
 """
+
+
+def _iso_to_epoch(s) -> float:
+    """ISO-8601 (GraphQL updatedAt) -> epoch seconds. Numbers pass through so
+    fixtures can supply epochs directly. Unparseable -> 0.0 (treated as old)."""
+    if isinstance(s, (int, float)):
+        return float(s)
+    if not s:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
 
 GH_RUNNER = None        # tests inject; defaults to agent_collab.GH_RUNNER
 
@@ -82,6 +98,7 @@ def gather_live(repo: str):
             "issues": [
                 {"number": n["number"], "title": n.get("title") or "",
                  "body": n.get("body") or "",
+                 "updated_at": _iso_to_epoch(n.get("updatedAt")),
                  "labels": [x["name"] for x in n["labels"]["nodes"]],
                  "comments": [{"id": c["databaseId"], "body": c.get("body") or ""}
                               for c in n["comments"]["nodes"]]}
@@ -159,36 +176,50 @@ def _board_core(body: str) -> str:
                      if not line.startswith("_Maintained by"))
 
 
-def plan(state: dict):
+def plan(state: dict, now=None):
     """The level-triggered delta: what must change to make GitHub consistent.
-    Pure function of the state — this is what makes the reconciler idempotent
-    and unit-testable."""
+    Pure function of the (state, now) — this is what makes the reconciler
+    idempotent and unit-testable. `now` defaults to wall-clock; tests pin it."""
+    import time as _t
+    now = _t.time() if now is None else now
     actions = []
     dashboard = None
+    becoming_available = set()       # issues this pass returns to the pool
     for issue in state.get("issues", []):
+        n = issue["number"]
         labels = set(issue.get("labels", []))
         if DASHBOARD_LABEL in labels:
             dashboard = issue
-            continue                                 # the board is never seeded
-        coordinated = ("in-progress" in labels
-                       or any(x.startswith("state:") for x in labels)
-                       or any(x.startswith("agent:") for x in labels))
-        if not coordinated:
-            actions.append({"action": "seed", "issue": issue["number"],
-                            "label": "state:available"})
+            continue                                 # the board is never reclaimed/seeded
+        agent_labels = [x for x in labels if x.startswith("agent:")]
+        in_prog = "in-progress" in labels
+        if in_prog and (now - issue.get("updated_at", now)) > RECLAIM_HOURS * 3600:
+            # RECLAIM: a checkout went silent past the abandonment window —
+            # strip in-progress + agent:* and return it to the claimable pool.
+            # A live agent that was merely quiet self-drops on its next
+            # `work verify`, so over-reclaiming is self-correcting.
+            actions.append({"action": "reclaim", "issue": n,
+                            "remove": sorted(["in-progress"] + agent_labels)})
+            becoming_available.add(n)
+        else:
+            coordinated = (in_prog or agent_labels
+                           or any(x.startswith("state:") for x in labels))
+            if not coordinated:
+                actions.append({"action": "seed", "issue": n, "label": "state:available"})
+                becoming_available.add(n)
         family = sorted(c["id"] for c in issue.get("comments", [])
                         if str(c.get("body", "")).startswith(MARKER))
         for dup in family[1:]:                       # keep the LOWEST id
-            actions.append({"action": "delete_comment", "issue": issue["number"],
-                            "comment": dup})
-    # Render the board from the PROJECTED post-mutation state (seeds applied),
-    # so one pass converges — otherwise every seeding run leaves a board that
-    # is stale until the next cron tick.
-    seeded = {a["issue"] for a in actions if a["action"] == "seed"}
-    projected = dict(state, issues=[
-        (dict(i, labels=list(i.get("labels", [])) + ["state:available"])
-         if i["number"] in seeded else i)
-        for i in state.get("issues", [])])
+            actions.append({"action": "delete_comment", "issue": n, "comment": dup})
+    # Render the board from the PROJECTED post-mutation state (seeds + reclaims
+    # applied), so one pass converges instead of leaving a stale board.
+    def _project(i):
+        if i["number"] not in becoming_available:
+            return i
+        kept = [x for x in i.get("labels", [])
+                if x != "in-progress" and not x.startswith("agent:")]
+        return dict(i, labels=kept + ["state:available"])
+    projected = dict(state, issues=[_project(i) for i in state.get("issues", [])])
     board = render_dashboard(projected)
     if dashboard is None:
         actions.append({"action": "dashboard_create", "body": board})
@@ -215,6 +246,14 @@ def apply(actions, repo: str, dry_run: bool = False):
                 _run(["label", "create", act["label"], "--color", "0E8A16", "--force"])
                 ok, out = _run(["issue", "edit", str(act["issue"]),
                                 "--add-label", act["label"]])
+        elif act["action"] == "reclaim":
+            ok, out = _run(["issue", "edit", str(act["issue"]),
+                            "--remove-label", ",".join(act["remove"]),
+                            "--add-label", "state:available"])
+            if ok:               # audit trail; the comment also refreshes updatedAt
+                _run(["issue", "comment", str(act["issue"]), "--body",
+                      "Reclaimed by agent-reconcile: in-progress for >%dh with no "
+                      "activity — returned to the pool." % int(RECLAIM_HOURS)])
         elif act["action"] == "delete_comment":
             ok, out = _run(["api", "-X", "DELETE",
                             "repos/%s/issues/comments/%d" % (repo, act["comment"])])
