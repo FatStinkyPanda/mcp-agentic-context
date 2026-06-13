@@ -6,18 +6,34 @@ automated workflows that auto-detect the impact of any issue/task an agent check
 **Extended 2026-06-11:** support 100 CONCURRENT AGENTS per project (including many on one
 device), atomic primitives throughout, and E2E testing expected for every commit.
 
-## HARNESS RESOURCE SAFETY — SHIPPED 2026-06-12 (Quasar)
+## 100-AGENT SOAK — PROVEN GREEN BOTH OSes 2026-06-13 (Quasar)
+The headline claim is now empirically settled. CI run 27456474140 (commit 7a8c805), 100
+concurrent agents, hammer-mode lease churn, on ubuntu AND windows: MUTEX-1 final counter ==
+committed increments (3584/3546, zero lost updates), MUTEX-2 zero double-holding, MUTEX-3
+416/454 forced lease losses, JRN 4000/4000 events exactly-once + zero torn, CLM 40/40
+one-winner-per-epoch, WRK 40/40 one-checkout-per-issue, COL collision detected. Getting
+there hardened the *harness*, not the engine: the original MUTEX-1 reconstructed a linear
+chain over the fenced register, but under true concurrency fence-order != write-order, so
+inert orphan writes formed cycles in the reconstruction (and OOM'd on the unbounded walk).
+Replaced by the direct invariant — only a STILL-VALID holder commits the shared counter
+(lease_valid before the RMW; a fresh-TTL lease keeps the 3ms section inside the 0.5s hold),
+so `final == acks` is race-free and O(1). The engine's mutual exclusion (MUTEX-2) and the
+fenced register were correct throughout.
+
+## HARNESS RESOURCE SAFETY — SHIPPED 2026-06-12/13 (Quasar)
 A verification harness must NEVER be able to take down the machine it runs on. The swarm
 spawned `agents` worker PROCESSES all at once; overlapping runs (the pre-push hook's swarm +
 a manual run + pytest's swarm tests) compounded into a process storm that nearly froze a
-20-core/16 GB dev box. Fixed STRUCTURALLY: `run_swarm` now runs a BOUNDED POOL — `agents`
-distinct identities still run, but at most `max_parallel` have a live OS process at once
-(default `_safe_parallel` = CPU/2, floor 2; CI soak passes an explicit 16). A machine-global
-lockfile (`collab-swarm-global.lock`, stale-broken) serializes overlapping runs. Because the
-invariants are correctness invariants (they must hold under ANY interleaving), bounded
-sustained contention proves them as rigorously as an all-at-once burst — and the bounded
-pool also stops 2-core CI runners from thrashing 100-deep (which was destabilizing the
-soak). Guard tests pin the cap; the cap is never exceeded regardless of `--agents`.
+20-core/16 GB dev box, and a second run drove RAM to 0 GB. Two structural fixes:
+(1) `run_swarm` runs a BOUNDED POOL — all `agents` identities still run, but at most
+`max_parallel` have a live OS process at once (default `_safe_parallel` = CPU/2, floor 2;
+CI soak passes 16). The bound ALONE makes overlapping runs safe (a few × CPU/2 stays within
+core count), so no fragile global lock is needed. (2) The pre-push hook runs the heavy ML
+suite and the subprocess-spawning swarm tests in SEPARATE pytest processes, so swarm
+subprocesses never stack on the parent's torch/model imports (RAM 0 GB -> 5.6 GB min). Guard
+tests pin the cap; the MUTEX-1 chain walk is cycle-safe + bounded so a verification check can
+never infinite-loop. Because the invariants are correctness invariants, bounded sustained
+contention proves them as rigorously as an all-at-once burst.
 
 ## THE SCALE TIER — SHIPPED 2026-06-11 (Quasar)
 Selftest 41/41 green (incl. adversarial-review hardening: CAS renew that can never
