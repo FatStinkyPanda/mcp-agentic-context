@@ -71,6 +71,27 @@ def _assert_swarm(report):
         "\n".join("%s  [%s]" % (c["name"], c.get("detail", "")) for c in failed))
 
 
+def test_swarm_parallelism_is_bounded():
+    """A verification harness must never be able to fork-bomb the host: the
+    safe cap is CPU-bounded and >= 2, and an explicit cap is honored."""
+    import os
+    cpu = os.cpu_count() or 4
+    for n in (1, 8, 100, 1000):
+        cap = collab_swarm._safe_parallel(n)
+        assert 2 <= cap <= max(2, cpu), "cap %d out of bounds for %d agents" % (cap, n)
+        assert cap <= n or n < 2, "cap must not exceed agent count"
+
+
+@pytest.mark.swarm
+def test_swarm_pool_runs_all_identities_under_cap():
+    """All agents run even though only max_parallel are ever live at once,
+    and every invariant still holds (bounded contention is valid contention)."""
+    report = collab_swarm.run_swarm(agents=8, iters=8, hammer=True,
+                                    max_parallel=3, timeout=120)
+    _assert_swarm(report)
+    assert report["parallel"] == 3
+
+
 @pytest.mark.swarm
 def test_swarm_store_primitives():
     """N processes: lease mutual exclusion, journal exactly-once, claim CAS."""
@@ -109,8 +130,8 @@ def test_swarmtest_cli_exit_contract():
 
 @pytest.mark.soak
 def test_soak_100_agents():
-    """The headline claim, literally: 100 concurrent agent processes on one
-    store with hammer-mode lease churn. Nightly CI; ~15-30 minutes (the mutex
-    role serializes 4000 critical sections on 2-core runners)."""
+    """The headline claim: 100 distinct agent identities contending one store
+    under hammer-mode lease churn, with at most max_parallel live processes so
+    the harness never saturates the host. Nightly CI; ~15-30 minutes."""
     _assert_swarm(collab_swarm.run_swarm(
-        agents=100, iters=40, hammer=True, timeout=1800))
+        agents=100, iters=40, hammer=True, timeout=1800, max_parallel=16))

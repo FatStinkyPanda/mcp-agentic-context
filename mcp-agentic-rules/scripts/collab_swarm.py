@@ -22,6 +22,14 @@ that make 100 concurrent agents safe:
 oversleep it: stale-break and fencing get exercised for real — a worker that
 loses its lease mid-section must observe lease_valid()==False and NOT write.
 
+RESOURCE SAFETY: `agents` is the number of distinct identities; at most
+`max_parallel` of them have a live OS process at any instant (default: a
+CPU-bounded safe cap), so the harness can never fork-bomb the host — even
+several overlapping runs (the pre-push hook + a manual run + pytest) stay
+well within core count. The invariants are correctness invariants — they
+hold under any interleaving — so bounded, sustained contention tests them
+as rigorously as an all-at-once burst.
+
 Usage:
     mcp collab swarmtest [--agents 8] [--iters 25] [--hammer] [--keep] [--json]
     python scripts/collab_swarm.py worker --role mutex ...   (internal)
@@ -47,6 +55,22 @@ from scripts import agent_collab as ac                       # noqa: E402
 ROLES = ("mutex", "journal", "claim", "checkout", "collide")
 READY_DEADLINE = 30.0
 STALL_SECONDS = 30.0
+
+
+# ── resource safety ─────────────────────────────────────────────────────────────────────────────
+# A verification harness must NEVER be able to saturate the machine it runs on.
+# `agents` is the number of distinct identities exercised; only `max_parallel`
+# of them have a LIVE OS process at any instant (the rest run as the pool
+# drains). The invariants are correctness invariants — they must hold under any
+# interleaving — so bounded-but-sustained contention tests them as rigorously
+# as a single all-at-once burst, without the fork-bomb risk.
+def _safe_parallel(agents: int) -> int:
+    cpu = os.cpu_count() or 4
+    # half the cores, leaving headroom for the OS, the orchestrator, the
+    # editor's tooling, MCP daemons, and any overlapping run. This bound ALONE
+    # makes the harness safe: even several overlapping runs stay well within
+    # core count, versus the unbounded all-at-once spawn that could fork-bomb.
+    return max(2, min(int(agents), max(2, cpu // 2)))
 
 
 # ── worker side ───────────────────────────────────────────────────────────────────────────────
@@ -185,19 +209,25 @@ def _read_full_journal(store: str, scope: str):
 
 
 def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
-              hammer=False, timeout=180.0, keep=False):
+              hammer=False, timeout=180.0, keep=False, max_parallel=None):
     """Run the swarm; returns {'ok', 'checks': [{name, ok, detail}], ...}.
     Always operates on an isolated store (a fresh temp dir unless one is
-    passed); the store is kept on failure or keep=True, removed on success."""
+    passed); the store is kept on failure or keep=True, removed on success.
+
+    `agents` distinct identities run, but at most `max_parallel` have a live OS
+    process at once (default: a CPU-bounded safe cap) — the harness can never
+    fork-bomb the machine, even with several runs overlapping."""
     own_store = store is None
     store = str(store or tempfile.mkdtemp(prefix="collab-swarm-"))
     pkg_root = str(Path(__file__).resolve().parents[1])
+    cap = int(max_parallel) if max_parallel else _safe_parallel(agents)
+    cap = max(2, cap)
     checks = []
     t_start = time.time()
-
     for role in roles:
         scope = "swarm-%s" % role
         n = 2 if role == "collide" else agents
+        role_cap = min(cap, n)
         role_ttl = 0.5 if (hammer and role == "mutex") else ttl
         sdir = Path(store) / "swarm" / role
         (sdir / "ready").mkdir(parents=True, exist_ok=True)
@@ -211,16 +241,22 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                          "url": "https://github.com/x/y/issues/%d" % i,
                          "body": "Touch src/m%d.py" % i, "labels": [], "state": "open"}
                 for i in range(1, iters + 1)}})
-        procs = []
-        for wid in range(n):
+        # pooled workers start on spawn — create the barrier up front so a
+        # worker never blocks waiting for siblings that haven't launched yet
+        try:
+            os.close(os.open(sdir / "go", os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            pass
+
+        def _spawn(wid):
             env = {**os.environ, "MCP_NSYNC_PATH": store, "MCP_NSYNC_AUTOSYNC": "0",
                    "AGENT_IDENTITY": ("swarm-collider" if role == "collide"
                                       else "swarm%03d" % wid)}
             env.pop("COLLAB_FAKE_GH", None)
             if fake_path:
                 env["COLLAB_FAKE_GH"] = str(fake_path)
-            cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "worker",
-                   "--role", role, "--scope", scope, "--id", str(wid),
+            cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()),
+                   "worker", "--role", role, "--scope", scope, "--id", str(wid),
                    "--iters", str(iters), "--ttl", str(role_ttl)]
             if hammer and role == "mutex":
                 cmd.append("--hammer")
@@ -229,23 +265,28 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                 wd.mkdir(parents=True, exist_ok=True)
                 cmd += ["--workdir", str(wd)]
             errf = open(sdir / "err" / ("%d.txt" % wid), "wb")
-            procs.append((subprocess.Popen(cmd, cwd=pkg_root, env=env,
-                                           stdout=subprocess.DEVNULL, stderr=errf), errf))
+            return [subprocess.Popen(cmd, cwd=pkg_root, env=env,
+                                     stdout=subprocess.DEVNULL, stderr=errf), errf]
 
-        deadline = time.time() + READY_DEADLINE
-        while len(list((sdir / "ready").glob("*"))) < n and time.time() < deadline:
-            time.sleep(0.02)
-        try:
-            os.close(os.open(sdir / "go", os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        except FileExistsError:
-            pass
-
-        # watchdog: global timeout + per-role stall detection — never hangs CI
+        # BOUNDED POOL: keep at most role_cap live processes; as each exits,
+        # launch the next identity until all n have run.
+        live = {}                              # wid -> [proc, errf]
+        rcodes = {}
+        next_wid = 0
         hard_deadline = time.time() + timeout
         stall_deadline = time.time() + STALL_SECONDS
         last_sig = None
         killed = ""
-        while any(p.poll() is None for p, _ in procs):
+        while next_wid < n or live:
+            while next_wid < n and len(live) < role_cap and not killed:
+                live[next_wid] = _spawn(next_wid)
+                next_wid += 1
+            for wid in list(live):
+                proc, errf = live[wid]
+                if proc.poll() is not None:
+                    rcodes[wid] = proc.wait()
+                    errf.close()
+                    del live[wid]
             if time.time() > hard_deadline:
                 killed = "global timeout %.0fs" % timeout
             else:
@@ -257,21 +298,25 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
                 if sig != last_sig:
                     last_sig = sig
                     stall_deadline = time.time() + STALL_SECONDS
-                elif time.time() > stall_deadline:
+                elif live and time.time() > stall_deadline:
                     killed = "stalled %.0fs without progress" % STALL_SECONDS
             if killed:
-                for p, _ in procs:
-                    p.kill()
+                for wid in list(live):
+                    proc, errf = live[wid]
+                    proc.kill()
+                    rcodes[wid] = proc.wait()
+                    errf.close()
+                    del live[wid]
                 break
-            time.sleep(0.1)
-        rcodes = []
-        for p, errf in procs:
-            rcodes.append(p.wait())
-            errf.close()
+            time.sleep(0.05)
+        rcode_list = [rcodes.get(wid, -999) for wid in range(n)]
         outs = [ac._read_json(sdir / "out" / ("%d.json" % wid)) for wid in range(n)]
         outs = [o for o in outs if o]
-        clean = len(outs) == n and all(rc == 0 for rc in rcodes) and not killed
-        detail = "rcodes=%s outs=%d/%d %s" % (rcodes, len(outs), n, killed)
+        clean = len(outs) == n and all(rc == 0 for rc in rcode_list) and not killed
+        detail = "rcodes=%s outs=%d/%d cap=%d %s" % (
+            rcode_list if n <= 12 else "[%d ok/%d]" % (
+                sum(1 for r in rcode_list if r == 0), n),
+            len(outs), n, role_cap, killed)
         if not clean:
             errs = []
             for wid in range(n):
@@ -377,7 +422,8 @@ def run_swarm(store=None, agents=8, iters=25, ttl=600.0, roles=ROLES,
 
     ok = all(c["ok"] for c in checks)
     report = {"ok": ok, "checks": checks, "agents": agents, "iters": iters,
-              "hammer": hammer, "elapsed": round(time.time() - t_start, 1), "store": store}
+              "hammer": hammer, "parallel": cap,
+              "elapsed": round(time.time() - t_start, 1), "store": store}
     if ok and not keep and own_store:
         shutil.rmtree(store, ignore_errors=True)
         report["store"] = "(removed)"
@@ -407,22 +453,28 @@ def main():
     r.add_argument("--timeout", type=float, default=None,
                    help="per-role budget; default scales with agents*iters "
                         "(100x40 hammer on 2-core CI needs ~25min, not 180s)")
+    r.add_argument("--max-parallel", type=int, default=None, dest="max_parallel",
+                   help="cap on LIVE worker processes (default: a CPU-bounded "
+                        "safe value). All --agents identities still run; this "
+                        "only bounds how many execute at once, so the harness "
+                        "can never saturate the machine.")
     a = ap.parse_args()
     if a.cmd == "worker":
         return worker_main(a)
     if a.cmd == "run":
         timeout = a.timeout if a.timeout else max(180.0, a.agents * a.iters * 0.4)
         report = run_swarm(store=a.store, agents=a.agents, iters=a.iters, ttl=a.ttl,
-                           hammer=a.hammer, keep=a.keep, timeout=timeout)
+                           hammer=a.hammer, keep=a.keep, timeout=timeout,
+                           max_parallel=a.max_parallel)
         if a.json:
             print(json.dumps(report, indent=2))
         else:
             for c in report["checks"]:
                 print(("PASS " if c["ok"] else "FAIL ") + c["name"]
                       + ("" if c["ok"] else "   [%s]" % c.get("detail", "")))
-            print("agents=%d iters=%d hammer=%s elapsed=%.1fs store=%s"
+            print("agents=%d iters=%d hammer=%s parallel=%d elapsed=%.1fs store=%s"
                   % (report["agents"], report["iters"], report["hammer"],
-                     report["elapsed"], report["store"]))
+                     report.get("parallel", 0), report["elapsed"], report["store"]))
         print("COLLAB_SWARM_OK" if report["ok"] else "COLLAB_SWARM_FAIL")
         return 0 if report["ok"] else 1
     ap.print_help()

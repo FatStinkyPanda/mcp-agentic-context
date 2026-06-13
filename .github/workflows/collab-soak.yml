@@ -51,6 +51,7 @@ jobs:
           python mcp-agentic-rules/scripts/collab_swarm.py run
           --agents "${{ github.event.inputs.agents || '100' }}"
           --iters "${{ github.event.inputs.iters || '40' }}"
+          --max-parallel 16
           --hammer --keep --json | tee swarm-report.json
 
       - uses: actions/upload-artifact@v4

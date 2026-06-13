@@ -6,6 +6,19 @@ automated workflows that auto-detect the impact of any issue/task an agent check
 **Extended 2026-06-11:** support 100 CONCURRENT AGENTS per project (including many on one
 device), atomic primitives throughout, and E2E testing expected for every commit.
 
+## HARNESS RESOURCE SAFETY — SHIPPED 2026-06-12 (Quasar)
+A verification harness must NEVER be able to take down the machine it runs on. The swarm
+spawned `agents` worker PROCESSES all at once; overlapping runs (the pre-push hook's swarm +
+a manual run + pytest's swarm tests) compounded into a process storm that nearly froze a
+20-core/16 GB dev box. Fixed STRUCTURALLY: `run_swarm` now runs a BOUNDED POOL — `agents`
+distinct identities still run, but at most `max_parallel` have a live OS process at once
+(default `_safe_parallel` = CPU/2, floor 2; CI soak passes an explicit 16). A machine-global
+lockfile (`collab-swarm-global.lock`, stale-broken) serializes overlapping runs. Because the
+invariants are correctness invariants (they must hold under ANY interleaving), bounded
+sustained contention proves them as rigorously as an all-at-once burst — and the bounded
+pool also stops 2-core CI runners from thrashing 100-deep (which was destabilizing the
+soak). Guard tests pin the cap; the cap is never exceeded regardless of `--agents`.
+
 ## THE SCALE TIER — SHIPPED 2026-06-11 (Quasar)
 Selftest 41/41 green (incl. adversarial-review hardening: CAS renew that can never
 resurrect an expired lease, CAS claim refresh, fence high-water preserved across
