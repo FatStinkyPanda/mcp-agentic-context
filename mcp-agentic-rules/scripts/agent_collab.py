@@ -722,6 +722,88 @@ def fleet_paused(project: str):
     return _read_json(_fleet_pause_path(project))
 
 
+# ── FLEET MODEL: the owner picks which model (and reasoning effort) each agent runs — per-agent OR
+# fleet-wide, from ANYWHERE (chat bridge, CLI). Like the pause switch the choice lives in the synced collab
+# dir, so it reaches EVERY device in seconds, and every agent loop re-reads it at the TOP of each tick — a
+# switch lands on the next tick, no restart. Resolution for an agent: its per-agent override, else the fleet
+# default, else "" (the loop keeps its own env default). ────────────────────────────────────────────────
+_MODEL_ALIASES = {  # friendly name -> canonical CLI id. Extend as new models ship; canonical claude-* ids pass through.
+    "sonnet": "claude-sonnet-4-6", "sonnet-4-6": "claude-sonnet-4-6", "sonnet4.6": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-8", "opus-4-8": "claude-opus-4-8", "opus4.8": "claude-opus-4-8",
+    "haiku": "claude-haiku-4-5-20251001", "haiku-4-5": "claude-haiku-4-5-20251001",
+    "fable": "claude-fable-5", "fable-5": "claude-fable-5",
+}
+_EFFORTS = {"low", "medium", "high"}  # 'max'/'xhigh' -> 'high' (verified ceiling for Claude.ai subscribers).
+
+
+def normalize_model(m: str) -> str:
+    """Friendly name -> canonical CLI model id. A known alias maps; any explicit ``claude-*`` id passes
+    through (forward-compatible with models newer than this table); an unknown bare name raises ValueError
+    so a typo can't silently crash-loop a headless tick."""
+    m = (m or "").strip()
+    if not m:
+        raise ValueError("empty model")
+    low = m.lower()
+    if low in _MODEL_ALIASES:
+        return _MODEL_ALIASES[low]
+    if low.startswith("claude-"):
+        return m  # already a canonical id (incl. future models) — trust it
+    raise ValueError("unknown model %r (use one of: %s, or a claude-* id)"
+                     % (m, ", ".join(sorted(set(_MODEL_ALIASES)))))
+
+
+def normalize_effort(e: str) -> str:
+    """Reasoning effort -> a valid CLI value (or '' for unset). 'max'/'xhigh'/'highest' fold to 'high' —
+    the verified ceiling for Claude.ai subscribers; a literal 'max' is rejected by the CLI and would
+    crash-loop the tick. Unknown values raise ValueError."""
+    e = (e or "").strip().lower()
+    if not e:
+        return ""
+    if e in ("max", "xhigh", "highest"):
+        return "high"
+    if e in _EFFORTS:
+        return e
+    raise ValueError("unknown effort %r (use: low, medium, high, or max)" % e)
+
+
+def _fleet_model_path(project: str) -> Path:
+    return collab_dir(project) / "fleet.model.json"
+
+
+def fleet_model_set(project: str, who: str, target: str, model: str, effort: str = "") -> dict:
+    """Set the model (+ optional effort) for ONE agent or the WHOLE fleet. ``target`` in {all,*,fleet} sets
+    the fleet default AND clears every per-agent override (a clean 'everyone on X' switch); any other target
+    is a call-sign whose per-agent override is set. Synced to all devices; each loop applies it next tick.
+    Returns the stored entry. Raises ValueError on an unknown model/effort (nothing is written)."""
+    entry = {"model": normalize_model(model)}        # validate BEFORE touching disk (fail closed, no partial write)
+    eff = normalize_effort(effort)
+    if eff:
+        entry["effort"] = eff
+    cfg = _read_json(_fleet_model_path(project)) or {"default": {}, "overrides": {}}
+    if (target or "").strip().lower() in ("all", "*", "fleet"):
+        cfg["default"], cfg["overrides"], scope = entry, {}, "all"
+    else:
+        scope = target.strip().lower()
+        cfg.setdefault("overrides", {})[scope] = entry
+    atomic_write_json(_fleet_model_path(project), cfg)
+    journal_log(project, who, "fleet.model_set", {"target": scope, **entry})
+    return {"target": scope, **entry}
+
+
+def fleet_model_get(project: str, agent: str):
+    """Resolve (model, effort) for one agent: per-agent override > fleet default > ('', ''). Empty means
+    'the loop keeps its own env default'. Cheap (one file read) — safe at the top of every tick."""
+    cfg = _read_json(_fleet_model_path(project)) or {}
+    ov = (cfg.get("overrides") or {}).get((agent or "").strip().lower()) or {}
+    df = cfg.get("default") or {}
+    return (ov.get("model") or df.get("model") or "", ov.get("effort") or df.get("effort") or "")
+
+
+def fleet_model_all(project: str) -> dict:
+    """The whole model config: {'default': {...}, 'overrides': {agent: {...}}}. For the status view."""
+    return _read_json(_fleet_model_path(project)) or {"default": {}, "overrides": {}}
+
+
 # ── claims (advisory work-area ownership) ─────────────────────────────────────────────────────
 def _claim_path(project: str, claim_id: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in claim_id)
@@ -3512,7 +3594,37 @@ def main():
                 return 2   # 2 = paused (distinct from 0=running) so an agent loop can branch on the exit code
             print("RUNNING")
             return 0
-        print("[FAIL] unknown fleet verb: %s (use pause|resume|status)" % verb)
+        if verb == "model":
+            # collab fleet model set <all|callsign> <model> [effort]   |   get <agent>   |   status
+            sub = args[2] if len(args) > 2 else "status"
+            if sub == "set" and len(args) >= 5:
+                try:
+                    e = fleet_model_set(project, who, args[3], args[4], args[5] if len(args) > 5 else "")
+                except ValueError as ex:
+                    print("[FAIL] %s" % ex)
+                    return 1
+                tgt = "ALL agents on ALL devices" if e["target"] == "all" else "agent %s" % e["target"]
+                print("[OK] %s -> model=%s%s (by %s). Applies on each loop's next tick — no restart."
+                      % (tgt, e["model"], (" effort=" + e["effort"]) if e.get("effort") else "", who))
+                return 0
+            if sub == "get" and len(args) >= 4:
+                m, eff = fleet_model_get(project, args[3])
+                print("%s %s" % (m or "-", eff or "-"))   # machine-readable for the agent loops ('-' = unset -> loop default)
+                return 0
+            if sub == "status":
+                cfg = fleet_model_all(project)
+                d = cfg.get("default") or {}
+                print("default: model=%s effort=%s" % (d.get("model") or "(loop env default)", d.get("effort") or "(loop default)"))
+                ov = cfg.get("overrides") or {}
+                if ov:
+                    for a in sorted(ov):
+                        print("  %s: model=%s effort=%s" % (a, ov[a].get("model") or "-", ov[a].get("effort") or "-"))
+                else:
+                    print("  (no per-agent overrides)")
+                return 0
+            print("[FAIL] usage: collab fleet model set <all|callsign> <model> [effort] | get <agent> | status")
+            return 1
+        print("[FAIL] unknown fleet verb: %s (use pause|resume|status|model)" % verb)
         return 1
 
     if cmd == "claim" and len(args) >= 2:
