@@ -1764,6 +1764,10 @@ def work_next(project: str, who: str, runner=None, start: bool = False,
         if n in checked_out or "in-progress" in labs \
                 or any(x.startswith("agent:") for x in labs):
             continue                                   # someone is on it
+        if "epic" in labs or str(it.get("title", "")).lstrip().upper().startswith("[EPIC]"):
+            continue                                   # EPICs are umbrella trackers, NOT pickable units —
+            #                                            ranking them P0 at the top stalls agents that try to
+            #                                            "do" an epic. Decompose into agent-tasks instead.
         form = parse_issue_form(it.get("body") or "")
         if any(d in open_numbers for d in (form.get("depends") or [])):
             continue                                   # blocked — not ready

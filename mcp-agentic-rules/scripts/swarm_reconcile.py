@@ -191,6 +191,11 @@ def plan(state: dict, now=None):
         if DASHBOARD_LABEL in labels:
             dashboard = issue
             continue                                 # the board is never reclaimed/seeded
+        if "epic" in labels or str(issue.get("title", "")).lstrip().upper().startswith("[EPIC]"):
+            continue                                 # EPICs are umbrella trackers, NOT pickable units of
+            #                                          work — never seed state:available / reclaim them, or
+            #                                          `work next` ranks them P0 at the top and agents stall
+            #                                          trying to "do" an epic. Decompose into agent-tasks instead.
         agent_labels = [x for x in labels if x.startswith("agent:")]
         in_prog = "in-progress" in labels
         if in_prog and (now - issue.get("updated_at", now)) > RECLAIM_HOURS * 3600:
