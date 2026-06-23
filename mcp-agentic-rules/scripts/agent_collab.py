@@ -685,6 +685,43 @@ def roles_all(project: str):
     return out
 
 
+# ── FLEET PAUSE: a single shared kill-switch the owner flips from ANYWHERE (chat bridge, CLI, an agent).
+# When set, EVERY agent loop on EVERY device idles (starts no new ticks) within one check cycle — the
+# marker lives in the synced collab dir, so NSync propagates a pause to the whole fleet in seconds. A
+# GRACEFUL pause: a tick already running finishes; no new work begins until resume. Loops check
+# fleet_paused() at the top of each iteration. ────────────────────────────────────────────────────────
+def _fleet_pause_path(project: str) -> Path:
+    return collab_dir(project) / "fleet.paused"
+
+
+def fleet_pause(project: str, who: str, reason: str = "") -> bool:
+    """Pause the WHOLE fleet (all roles, all devices). Idempotent. journal_log triggers the NSync push so
+    the pause propagates fast. Returns True."""
+    atomic_write_json(_fleet_pause_path(project),
+                      {"paused": True, "by": who, "at": _now(), "reason": reason})
+    journal_log(project, who, "fleet.paused", {"reason": reason})
+    return True
+
+
+def fleet_resume(project: str, who: str) -> bool:
+    """Resume the fleet. Returns True if it had been paused (else a no-op)."""
+    path = _fleet_pause_path(project)
+    was = path.exists()
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    if was:
+        journal_log(project, who, "fleet.resumed", {})
+    return was
+
+
+def fleet_paused(project: str):
+    """The pause-marker dict if the fleet is PAUSED right now, else None. Cheap (one file read) — safe to
+    call at the top of every agent-loop iteration."""
+    return _read_json(_fleet_pause_path(project))
+
+
 # ── claims (advisory work-area ownership) ─────────────────────────────────────────────────────
 def _claim_path(project: str, claim_id: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in claim_id)
@@ -3453,6 +3490,29 @@ def main():
                      rinfo.get("fence")))
             return 0
         print("[FAIL] unknown role verb: %s (use acquire|renew|release|holder|status)" % verb)
+        return 1
+
+    if cmd == "fleet" and len(args) >= 2:
+        verb = args[1]
+        if verb == "pause":
+            reason = " ".join(args[2:]) if len(args) > 2 else ""
+            fleet_pause(project, who, reason)
+            print("[OK] FLEET PAUSED by %s%s — every agent on every device idles (no new ticks) within a "
+                  "check cycle. Resume with: collab fleet resume" % (who, (" — " + reason) if reason else ""))
+            return 0
+        if verb == "resume":
+            was = fleet_resume(project, who)
+            print("[OK] FLEET RESUMED by %s — agents pick work back up." % who if was
+                  else "[OK] fleet was not paused (no-op).")
+            return 0
+        if verb == "status":
+            p = fleet_paused(project)
+            if p:
+                print("PAUSED by %s%s" % (p.get("by", "?"), (" — " + p["reason"]) if p.get("reason") else ""))
+                return 2   # 2 = paused (distinct from 0=running) so an agent loop can branch on the exit code
+            print("RUNNING")
+            return 0
+        print("[FAIL] unknown fleet verb: %s (use pause|resume|status)" % verb)
         return 1
 
     if cmd == "claim" and len(args) >= 2:

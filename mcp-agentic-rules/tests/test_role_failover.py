@@ -78,3 +78,18 @@ def test_roles_all_lists_active_roles(monkeypatch, tmp_path):
     roles = ac.roles_all(P)
     assert set(roles) == {"maestro", "scout"}
     assert roles["maestro"]["owner"] == "maestro@A"
+
+
+def test_fleet_pause_resume(monkeypatch, tmp_path):
+    """The fleet-wide kill-switch the owner flips from Telegram/CLI: a synced marker that every agent loop
+    checks. Pause sets it (with who/reason); resume clears it; status reads it; resume-when-not-paused is a
+    no-op. (Loops idle while fleet_paused() is truthy — verified by the loop wiring, not here.)"""
+    _isolate(monkeypatch, tmp_path, "pause")
+    P = "fleet-pause-probe"
+    assert ac.fleet_paused(P) is None                  # running by default
+    ac.fleet_pause(P, "owner", "maintenance")
+    p = ac.fleet_paused(P)
+    assert p and p["paused"] is True and p["by"] == "owner" and p["reason"] == "maintenance"
+    assert ac.fleet_resume(P, "owner") is True          # was paused -> resumed
+    assert ac.fleet_paused(P) is None
+    assert ac.fleet_resume(P, "owner") is False         # resume when not paused = no-op
