@@ -627,6 +627,64 @@ def leases_all(project: str):
     return out
 
 
+# ── ROLE leadership: cross-device single-active with automatic failover ─────────────────────────
+# A ROLE (e.g. "maestro") is a FLEET-WIDE singleton: exactly ONE agent instance is ACTIVE and drives it at
+# a time, across ALL devices. Built on the fenced lease above — the active instance renews; if its device
+# dies/crashes/reboots, the lease goes stale and a standby's next acquire breaks it (rename-CAS) and takes
+# over with a STRICTLY HIGHER fence, so a resurrected old holder's late writes are structurally rejected
+# (no split-brain). Standbys do NO role work until they win. This is the cross-device failover keystone:
+# one Maestro acts fleet-wide; if its device goes offline, another Maestro seamlessly takes over.
+ROLE_PREFIX = "role-active:"
+ROLE_TTL = 90.0   # short: a dead holder frees the role within ~TTL; the active instance must renew inside it.
+
+
+def role_resource(role: str) -> str:
+    """The lease resource backing a role's single-active leadership."""
+    return ROLE_PREFIX + role.strip().lower()
+
+
+def role_acquire(project: str, role: str, who: str, ttl: float = ROLE_TTL, grace: float = 0.0):
+    """Try to become the ACTIVE instance of ``role`` fleet-wide. Returns ``(active, info)``:
+      * active=True  -> WE hold the role now: drive it, renew before ``ttl`` expires, release on exit.
+      * active=False -> a LIVE instance holds it elsewhere: be a hot STANDBY (do NO role work; retry later).
+    ``grace`` (standby bias): if the current holder is STALE but expired less than ``grace``s ago, DEFER —
+    so a briefly-offline primary recovers before a standby takes over (no flap on a transient blip). The
+    primary passes grace=0 (takes the role the instant it is free); standbys pass grace>0."""
+    res = role_resource(role)
+    if grace > 0.0:
+        cur = lease_info(project, res)
+        if cur and cur.get("stale"):
+            past = -float(cur.get("expires_in", 0.0))   # seconds since expiry (expires_in is <= 0 when stale)
+            if past < grace:
+                return False, dict(cur, deferring="holder stale %ds < grace %ds — letting it recover"
+                                                   % (int(past), int(grace)))
+    return lease_acquire(project, res, who, ttl=ttl, note="role:" + role)
+
+
+def role_renew(project: str, role: str, who: str, fence=None):
+    """Renew our active leadership of ``role`` — call well within ``ttl`` while driving it."""
+    return lease_renew(project, role_resource(role), who, fence)
+
+
+def role_release(project: str, role: str, who: str, fence=None):
+    """Step down from ``role`` (graceful shutdown) so a standby takes over IMMEDIATELY, not after the TTL."""
+    return lease_release(project, role_resource(role), who, fence)
+
+
+def role_holder(project: str, role: str):
+    """Current active holder of ``role`` (lease_info dict with staleness), or None if the role is free."""
+    return lease_info(project, role_resource(role))
+
+
+def roles_all(project: str):
+    """All roles that have an active (or stale, failover-ready) holder: ``{role: holder_info}``."""
+    out = {}
+    for resource, info in leases_all(project).items():
+        if resource.startswith(ROLE_PREFIX):
+            out[resource[len(ROLE_PREFIX):]] = info
+    return out
+
+
 # ── claims (advisory work-area ownership) ─────────────────────────────────────────────────────
 def _claim_path(project: str, claim_id: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in claim_id)
@@ -3346,6 +3404,55 @@ def main():
         holder = info.get("owner", "?") if info else "?"
         left = int(info.get("expires_in", 0)) if info else 0
         print(f"[HELD] {resource} is held by {holder} ({left}s left) — coordinate via journal/messages")
+        return 1
+
+    if cmd == "role" and len(args) >= 2:
+        verb = args[1]
+        if verb == "status":
+            entries = roles_all(project)
+            if not entries:
+                print("(no active roles)")
+            for role_name, rinfo in sorted(entries.items()):
+                rstate = "STALE (failover-ready)" if rinfo["stale"] else "%ds left" % int(rinfo["expires_in"])
+                print("role %s: ACTIVE on %s (%s) fence=%s"
+                      % (role_name, rinfo["owner"], rstate, rinfo.get("fence")))
+            return 0
+        if len(args) < 3:
+            print("[FAIL] role %s needs a role name" % verb)
+            return 1
+        role_name = args[2]
+        grace = float(_pop_opt(args, "--grace", 0) or 0)
+        rfence_opt = _pop_opt(args, "--fence")
+        rfence = int(rfence_opt) if rfence_opt is not None else None
+        if verb == "acquire":
+            active, rinfo = role_acquire(project, role_name, who, grace=grace)
+            if active:
+                print("[ACTIVE] role %s (%s) fence=%d — drive it; renew before TTL"
+                      % (role_name, who, int((rinfo or {}).get("fence", 0))))
+                return 0
+            if (rinfo or {}).get("deferring"):
+                print("[STANDBY] role %s — %s" % (role_name, rinfo["deferring"]))
+            else:
+                print("[STANDBY] role %s ACTIVE on %s — stand by (no role work); retry to take over if it dies"
+                      % (role_name, (rinfo or {}).get("owner", "?")))
+            return 3                              # 3 = standby (vs 0=active, 1=error) so a loop can branch
+        if verb == "renew":
+            ok, _ = role_renew(project, role_name, who, rfence)
+            print("[OK] renewed role %s" % role_name if ok
+                  else "[LOST] role %s — you are no longer active; stop driving it" % role_name)
+            return 0 if ok else 1
+        if verb == "release":
+            ok, _ = role_release(project, role_name, who, rfence)
+            print("[OK] released role %s — a standby takes over now" % role_name if ok
+                  else "[FAIL] release role %s" % role_name)
+            return 0 if ok else 1
+        if verb == "holder":
+            rinfo = role_holder(project, role_name)
+            print("FREE" if not rinfo else "%s (%s) fence=%s"
+                  % (rinfo["owner"], "STALE" if rinfo["stale"] else "%ds left" % int(rinfo["expires_in"]),
+                     rinfo.get("fence")))
+            return 0
+        print("[FAIL] unknown role verb: %s (use acquire|renew|release|holder|status)" % verb)
         return 1
 
     if cmd == "claim" and len(args) >= 2:
